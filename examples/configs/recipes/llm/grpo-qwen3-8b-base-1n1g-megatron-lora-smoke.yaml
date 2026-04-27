@@ -28,7 +28,7 @@ policy:
 
   megatron_cfg:
     enabled: true
-    tensor_model_parallel_size: 2
+    tensor_model_parallel_size: 1
     expert_model_parallel_size: 1
     pipeline_model_parallel_size: 1
     context_parallel_size: 1
@@ -38,27 +38,14 @@ policy:
     # `freeze_moe_router=true` combined with PEFT. Qwen3-8B-Base is dense
     # so freezing the MoE router is moot anyway.
     freeze_moe_router: false
-    pipeline_dtype: bfloat16
-    empty_unused_memory_level: 1
-    bias_activation_fusion: false
-    peft:
-      enabled: true
-      dim: 32
-      alpha: 64
-      dropout: 0.0
-      dropout_position: pre
-      lora_A_init_method: xavier
-      lora_B_init_method: zero
-      a2a_experimental: false
-      lora_dtype: bfloat16
 
   sequence_packing:
     enabled: false
 
   generation:
     vllm_cfg:
-      tensor_parallel_size: 2
-      gpu_memory_utilization: 0.45
+      tensor_parallel_size: 1
+      gpu_memory_utilization: 0.4
       max_model_len: 1024
       enforce_eager: true
 
@@ -69,5 +56,5 @@ logger:
   monitor_gpus: false
 
 cluster:
-  gpus_per_node: 2
+  gpus_per_node: 1
   num_nodes: 1
