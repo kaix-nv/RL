@@ -13,15 +13,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Run a command inside the nvcr.io/nvidia/nemo-rl:v0.5.0 image with our recipes
-# mounted in. Designed for Stage 0c smokes on the local A6000 host.
+# Run a command inside the nvcr.io/nvidia/nemo-rl:v0.5.0 image with our local
+# recipes mounted in. Designed for LoRA + RL smoke runs on the local A6000 host.
 #
 # Usage:
 #   bash tools/run_in_nemo_rl_container.sh <gpu-spec> <cmd...>
 # Example:
-#   bash tools/run_in_nemo_rl_container.sh 'device=0' \
-#     uv run python examples/run_sft.py \
-#     --config examples/configs/recipes/llm/sft-minimax-m2.7-1n1g-fsdp2-lora-smoke.yaml
+#   bash tools/run_in_nemo_rl_container.sh 'device=0,1' \
+#     uv run python examples/run_grpo.py \
+#     --config examples/configs/recipes/llm/grpo-qwen3-8b-base-1n2g-megatron-lora-smoke.yaml
 
 set -euo pipefail
 
@@ -44,7 +44,6 @@ exec docker run --rm \
   --ulimit memlock=-1 \
   --ulimit stack=67108864 \
   -v "$WORKTREE/examples/configs/recipes/llm":/opt/nemo-rl/examples/configs/recipes/llm \
-  -v "$WORKTREE/tools/preflight_minimax_m2_dispatch.py":/opt/nemo-rl/tools/preflight_minimax_m2_dispatch.py:ro \
   -v "$HF_CACHE":/root/.cache/huggingface \
   -v "$RESULTS":/opt/nemo-rl/results \
   -v "$LOGS":/opt/nemo-rl/logs \

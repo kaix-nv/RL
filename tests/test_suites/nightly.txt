@@ -164,10 +164,3 @@ tests/test_suites/llm/distillation-qwen3-32b-to-1.7b-base-1n8g-fsdp2tp1.v1.sh
 # Short megatron
 tests/test_suites/llm/distillation-qwen3-32b-to-1.7b-base-1n8g-megatron-tp2pp2cp2-pack.sh
 
-# MiniMax-M2 (tiny-random smoke + real-model 4n8g Megatron LoRA)
-tests/test_suites/llm/sft-minimax-m2.7-1n1g-fsdp2-lora-smoke.sh
-tests/test_suites/llm/dpo-minimax-m2.7-1n1g-fsdp2-lora-smoke.sh
-tests/test_suites/llm/grpo-minimax-m2.7-1n1g-fsdp2-lora-smoke.sh
-tests/test_suites/llm/sft-minimax-m2.7-4n8g-megatron-lora.sh
-tests/test_suites/llm/dpo-minimax-m2.7-4n8g-megatron-lora.sh
-tests/test_suites/llm/grpo-minimax-m2.7-4n8g-megatron-lora.sh
