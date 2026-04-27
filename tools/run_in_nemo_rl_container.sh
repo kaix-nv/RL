@@ -27,9 +27,11 @@ set -euo pipefail
 
 IMAGE="${IMAGE:-nvcr.io/nvidia/nemo-rl:v0.5.0}"
 WORKTREE="${WORKTREE:-/home/scratch.kaix_coreai/workspace/rl/RL/.worktrees/feat-minimax-m2.7-pipeclean}"
-HF_CACHE="${HF_CACHE:-/home/scratch.kaix_coreai/hf-cache}"
-RESULTS="${RESULTS:-/home/scratch.kaix_coreai/nemo-rl-results}"
-LOGS="${LOGS:-/home/scratch.kaix_coreai/nemo-rl-logs}"
+# Local (non-NFS) paths so the container's root user can write without
+# tripping NFS root_squash on /home/scratch.kaix_coreai.
+HF_CACHE="${HF_CACHE:-/home/kaix/nemo-rl-runs/hf-cache}"
+RESULTS="${RESULTS:-/home/kaix/nemo-rl-runs/results}"
+LOGS="${LOGS:-/home/kaix/nemo-rl-runs/logs}"
 
 GPUS="${1:?gpu spec required, e.g. 'device=0' or 'all'}"
 shift
