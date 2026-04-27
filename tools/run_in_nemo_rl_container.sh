@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Copyright (c) 2026, NVIDIA CORPORATION.  All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Run a command inside the nvcr.io/nvidia/nemo-rl:v0.5.0 image with our recipes
+# mounted in. Designed for Stage 0c smokes on the local A6000 host.
+#
+# Usage:
+#   bash tools/run_in_nemo_rl_container.sh <gpu-spec> <cmd...>
+# Example:
+#   bash tools/run_in_nemo_rl_container.sh 'device=0' \
+#     uv run python examples/run_sft.py \
+#     --config examples/configs/recipes/llm/sft-minimax-m2.7-1n1g-fsdp2-lora-smoke.yaml
+
+set -euo pipefail
+
+IMAGE="${IMAGE:-nvcr.io/nvidia/nemo-rl:v0.5.0}"
+WORKTREE="${WORKTREE:-/home/scratch.kaix_coreai/workspace/rl/RL/.worktrees/feat-minimax-m2.7-pipeclean}"
+HF_CACHE="${HF_CACHE:-/home/scratch.kaix_coreai/hf-cache}"
+RESULTS="${RESULTS:-/home/scratch.kaix_coreai/nemo-rl-results}"
+LOGS="${LOGS:-/home/scratch.kaix_coreai/nemo-rl-logs}"
+
+GPUS="${1:?gpu spec required, e.g. 'device=0' or 'all'}"
+shift
+
+mkdir -p "$HF_CACHE" "$RESULTS" "$LOGS"
+
+exec docker run --rm \
+  --gpus "\"$GPUS\"" \
+  --ipc=host \
+  --ulimit memlock=-1 \
+  --ulimit stack=67108864 \
+  -v "$WORKTREE/examples/configs/recipes/llm":/opt/nemo-rl/examples/configs/recipes/llm \
+  -v "$WORKTREE/tools/preflight_minimax_m2_dispatch.py":/opt/nemo-rl/tools/preflight_minimax_m2_dispatch.py:ro \
+  -v "$HF_CACHE":/root/.cache/huggingface \
+  -v "$RESULTS":/opt/nemo-rl/results \
+  -v "$LOGS":/opt/nemo-rl/logs \
+  -w /opt/nemo-rl \
+  "$IMAGE" \
+  bash -c "$*"
