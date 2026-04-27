@@ -43,6 +43,7 @@ exec docker run --rm \
   --ipc=host \
   --ulimit memlock=-1 \
   --ulimit stack=67108864 \
+  -e VLLM_USE_V1=0 \
   -v "$WORKTREE/examples/configs/recipes/llm":/opt/nemo-rl/examples/configs/recipes/llm \
   -v "$HF_CACHE":/root/.cache/huggingface \
   -v "$RESULTS":/opt/nemo-rl/results \
