@@ -1,0 +1,69 @@
+defaults: ../../grpo_math_1B.yaml
+
+grpo:
+  max_num_steps: 1
+  num_prompts_per_step: 1
+  num_generations_per_prompt: 2
+  val_at_start: false
+  val_at_end: false
+  val_period: 0
+
+checkpointing:
+  enabled: true
+  checkpoint_dir: results/grpo-qwen3-8b-base-1n2g-megatron-lora-smoke
+  save_period: 1
+  save_optimizer: true
+  keep_top_k: 2
+
+policy:
+  model_name: Qwen/Qwen3-8B-Base
+  train_global_batch_size: 2
+  train_micro_batch_size: 1
+  logprob_batch_size: 1
+  max_total_sequence_length: 1024
+  precision: bfloat16
+
+  dtensor_cfg:
+    enabled: false
+
+  megatron_cfg:
+    enabled: true
+    tensor_model_parallel_size: 2
+    expert_model_parallel_size: 1
+    pipeline_model_parallel_size: 1
+    context_parallel_size: 1
+    sequence_parallel: false
+    activation_checkpointing: true
+    pipeline_dtype: bfloat16
+    empty_unused_memory_level: 1
+    bias_activation_fusion: false
+    peft:
+      enabled: true
+      dim: 32
+      alpha: 64
+      dropout: 0.0
+      dropout_position: pre
+      lora_A_init_method: xavier
+      lora_B_init_method: zero
+      a2a_experimental: false
+      lora_dtype: bfloat16
+
+  sequence_packing:
+    enabled: false
+
+  generation:
+    vllm_cfg:
+      tensor_parallel_size: 2
+      gpu_memory_utilization: 0.45
+      max_model_len: 1024
+      enforce_eager: true
+
+logger:
+  log_dir: logs/grpo-qwen3-8b-base-1n2g-megatron-lora-smoke
+  wandb_enabled: false
+  tensorboard_enabled: false
+  monitor_gpus: false
+
+cluster:
+  gpus_per_node: 2
+  num_nodes: 1
