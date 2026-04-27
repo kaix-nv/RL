@@ -34,6 +34,10 @@ policy:
     context_parallel_size: 1
     sequence_parallel: false
     activation_checkpointing: true
+    # Override grpo_math_1B.yaml default (true) — v0.5.0 image rejects
+    # `freeze_moe_router=true` combined with PEFT. Qwen3-8B-Base is dense
+    # so freezing the MoE router is moot anyway.
+    freeze_moe_router: false
     pipeline_dtype: bfloat16
     empty_unused_memory_level: 1
     bias_activation_fusion: false
