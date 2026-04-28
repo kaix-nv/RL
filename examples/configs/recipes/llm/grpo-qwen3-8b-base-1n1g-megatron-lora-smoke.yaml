@@ -10,7 +10,7 @@ grpo:
 
 checkpointing:
   enabled: true
-  checkpoint_dir: results/grpo-qwen3-8b-base-1n2g-megatron-lora-smoke
+  checkpoint_dir: results/grpo-qwen3-8b-base-1n1g-megatron-lora-smoke
   save_period: 1
   save_optimizer: true
   keep_top_k: 2
@@ -50,7 +50,7 @@ policy:
       enforce_eager: true
 
 logger:
-  log_dir: logs/grpo-qwen3-8b-base-1n2g-megatron-lora-smoke
+  log_dir: logs/grpo-qwen3-8b-base-1n1g-megatron-lora-smoke
   wandb_enabled: false
   tensorboard_enabled: false
   monitor_gpus: false
