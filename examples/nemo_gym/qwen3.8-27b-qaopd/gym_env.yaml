@@ -15,6 +15,9 @@ env:
   nemo_gym:
     skip_verification: true
     skip_verification_reward: 0.0
+    # Serializes venv installs under a lock. The policy-server copies below (and all simple agents)
+    # share one server directory, so unlocked installers race on the same .venv.
+    skip_venv_if_present: true
     # Interpolation variables some bundled configs reference; their servers are replaced below.
     genrm_model_name: unused
     judge_model_name: unused
