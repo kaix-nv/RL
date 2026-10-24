@@ -96,9 +96,11 @@ policy:
       clip_grad: ${policy.max_grad_norm}
     scheduler:
       lr_decay_style: cosine
-      # Fixed, not ${distillation.max_num_steps}: Megatron checks the restored schedule against the
-      # config, so tying it to max_num_steps would break resuming an extended run.
       lr_decay_iters: 100
+      # On resume, take the schedule from this config instead of asserting it equals the
+      # checkpoint's. NeMo-RL derives the weight-decay horizon from max_num_steps, so extending a
+      # run would otherwise fail Megatron's scheduler consistency check.
+      override_opt_param_scheduler: true
       lr_warmup_iters: 20
       lr_warmup_init: 1.0e-7
   make_sequence_length_divisible_by: ${mul:${mul:${.megatron_cfg.tensor_model_parallel_size}, ${.megatron_cfg.context_parallel_size}}, 2}
