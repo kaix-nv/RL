@@ -1,0 +1,68 @@
+# NeMo Gym wiring for on-policy distillation of Qwen3.8 on the public Nemotron-RL Super blend
+# (nvidia/Nemotron-RL-Super-Training-Blends). Imported by qaopd_qwen38_27b.yaml.
+#
+# Rewards are not used: the teacher's KL replaces them, so every agent runs with
+# skip_verification. Agents still generate through the policy server, and Gym still resolves every
+# server a config file names. The judge aliases those files reference (GenRM, safety, LLM judge)
+# are therefore pointed at copies of the policy server instead of separate vLLM judges.
+#
+# Agent coverage: every agent in the blend except the three that need live sandboxes or tool
+# servers (swe_agents_train, math_formal_lean_refinement_agent, workplace_assistant_simple_agent).
+# Filter their rows out of the training JSONL; there is no environment for them here.
+env:
+  should_use_nemo_gym: true
+  should_log_nemo_gym_responses: true
+  nemo_gym:
+    skip_verification: true
+    skip_verification_reward: 0.0
+    port_range_low: 5000
+    port_range_high: 5999
+    thinking_tags:
+      - "<think>"
+      - "</think>"
+    config_paths:
+      - responses_api_models/vllm_model/configs/vllm_model_for_training.yaml
+      - resources_servers/math_with_judge/configs/math_with_judge.yaml
+      - resources_servers/code_gen/configs/code_gen.yaml
+      - resources_servers/mcqa/configs/mcqa.yaml
+      - resources_servers/instruction_following/configs/instruction_following.yaml
+      - resources_servers/structured_outputs/configs/structured_outputs_json.yaml
+      - resources_servers/calendar/configs/calendar.yaml
+      - resources_servers/genrm_compare/configs/genrm_compare.yaml
+      - resources_servers/single_step_tool_use_with_argument_comparison/configs/single_step_tool_use_with_argument_comparison.yaml
+      - resources_servers/single_step_tool_use_with_argument_comparison/configs/toolcall_schema_single_step_tool_use_with_argument_comparison.yaml
+      - resources_servers/single_step_tool_use_with_argument_comparison/configs/swe_pivot_single_step_tool_use_with_argument_comparison.yaml
+      - resources_servers/reasoning_gym/configs/reasoning_gym.yaml
+      - resources_servers/swerl_gen/configs/swerl_gen.yaml
+      - resources_servers/jailbreak_detection/configs/jailbreak_detection_nemotron_combined_reward_tp8.yaml
+      - resources_servers/over_refusal_detection/configs/over_refusal_detection_nemotron_tp8.yaml
+      - resources_servers/multichallenge/configs/multichallenge.yaml
+      - resources_servers/inverse_if/configs/inverse_if.yaml
+
+    # Qwen3.8 chat template: thinking on by default (reasoning_effort defaults to xhigh) and earlier
+    # turns keep their reasoning (preserve_thinking). Reasoning is split out by vLLM's qwen3 parser,
+    # configured on the generation server in qaopd_qwen38_27b.yaml.
+    policy_model:
+      responses_api_models:
+        vllm_model:
+          uses_reasoning_parser: true
+          chat_template_kwargs:
+            enable_thinking: true
+            preserve_thinking: true
+    # Rows for genrm_simple_agent_reasoning_off were collected with thinking disabled.
+    policy_model_reasoning_off:
+      _copy: policy_model
+      responses_api_models:
+        vllm_model:
+          chat_template_kwargs:
+            enable_thinking: false
+
+    # Judge aliases. genrm_compare.yaml defines genrm_model as its own vLLM server; drop that
+    # definition before copying the policy server over it.
+    genrm_model:
+      _delete_key: responses_api_models
+      _copy: policy_model
+    safety_judge_model:
+      _copy: policy_model
+    judge_model:
+      _copy: policy_model

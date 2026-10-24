@@ -1,0 +1,184 @@
+# QAOPD (quantization-aware on-policy distillation) for Qwen3.8-27B with a frozen BF16 self-teacher.
+#
+# The NVFP4 student generates rollouts on the public Nemotron-RL Super prompts through NeMo Gym
+# (gym_env.yaml); the BF16 teacher scores them, and the student is trained on teacher-top-k reverse
+# KL over its own assistant tokens. Real-quant rollouts: the policy recipe alone defines the
+# deployment format, and vLLM runs it with native NVFP4 kernels after every refit.
+#
+# Run: examples/nemo_gym/run_distillation_nemo_gym.py --config <this file>
+# Every path below must be absolute and visible to Ray workers. Placeholders (/path/to/...) are
+# set by the launcher or on the command line.
+#
+# Status: unvalidated. Full-length (65K) memory and the dense W4A4 + GatedDeltaNet native refit
+# path have not been run; start with the short smoke overrides at the bottom of this file.
+defaults:
+  - ../../modelopt/qa_distillation_math_megatron.yaml
+  - gym_env.yaml
+
+distillation:
+  num_prompts_per_step: 256
+  num_generations_per_prompt: 1
+  max_rollout_turns: 1
+  max_num_steps: 100
+  max_num_epochs: 1
+  val_period: -1
+  val_at_start: false
+  val_at_end: false
+  max_val_samples: null
+  topk_logits_k: 300
+  seed: 42
+
+loss_fn:
+  kl_type: reverse
+  mixed_kl_weight: 0.0
+
+checkpointing:
+  enabled: true
+  checkpoint_dir: /path/to/results/qaopd-qwen38-27b
+  metric_name: null
+  keep_top_k: null
+  save_period: 10
+  save_optimizer: true
+
+policy:
+  model_name: /path/to/Qwen3.8-27B
+  tokenizer:
+    name: ${..model_name}
+    chat_template_kwargs: null
+  train_global_batch_size: 256
+  train_micro_batch_size: 1
+  generation_batch_size: 64
+  logprob_batch_size: 1
+  # Prompts are capped at 16K tokens when the training JSONL is built, leaving at least 48K for
+  # the rollout; Qwen3.8 thinks at reasoning_effort=xhigh by default.
+  max_total_sequence_length: 65536
+  logprob_chunk_size: 2048
+  offload_optimizer_for_logprob: true
+  # Packing is off: GatedDeltaNet kernels are not bit-reproducible across packed (cu_seqlens)
+  # layouts, which perturbs teacher targets at the scale of the KD loss itself.
+  sequence_packing:
+    enabled: false
+  dynamic_batching:
+    enabled: false
+
+  # ModelOpt recipe (Megatron leaf names); see modelopt_recipes/models/Qwen/Qwen3.8-27B/qaopd/.
+  # r1_mcore = NVFP4 W4A4 on every projection; r0_mcore = FP8 attention / GatedDeltaNet.
+  quant_cfg: /path/to/Model-Optimizer/modelopt_recipes/models/Qwen/Qwen3.8-27B/qaopd/r1_mcore.yaml
+  # Same calibration set as the HF PTQ baselines (hf_ptq.py), so QAOPD starts from the same scales.
+  quant_calib_data: nemotron-post-training-v3
+  quant_calib_size: 512
+  quant_batch_size: 1
+  quant_sequence_length: 4096
+
+  megatron_cfg:
+    empty_unused_memory_level: 1
+    activation_checkpointing: true
+    tensor_model_parallel_size: 4
+    pipeline_model_parallel_size: 1
+    context_parallel_size: 4
+    sequence_parallel: true
+    apply_rope_fusion: true
+    bias_activation_fusion: false
+    defer_fp32_logits: true
+    gradient_accumulation_fusion: false
+    optimizer:
+      lr: 1.0e-5
+      min_lr: 2.0e-6
+      weight_decay: 0.0
+      clip_grad: ${policy.max_grad_norm}
+    scheduler:
+      lr_decay_style: cosine
+      lr_decay_iters: ${distillation.max_num_steps}
+      lr_warmup_iters: 20
+      lr_warmup_init: 1.0e-7
+  make_sequence_length_divisible_by: ${mul:${mul:${.megatron_cfg.tensor_model_parallel_size}, ${.megatron_cfg.context_parallel_size}}, 2}
+
+  generation:
+    backend: vllm
+    max_new_tokens: ${..max_total_sequence_length}
+    # On-policy: sample from the student's full distribution.
+    temperature: 1.0
+    top_p: 1.0
+    top_k: null
+    real_quant: true
+    quant_cfg: null
+    real_quant_export_cpu_offload: true
+    vllm_cfg:
+      async_engine: true
+      expose_http_server: true
+      # The NVFP4 27B student fits on one GPU; more replicas means more rollout throughput.
+      tensor_parallel_size: 1
+      pipeline_parallel_size: 1
+      expert_parallel_size: 1
+      gpu_memory_utilization: 0.6
+      max_model_len: ${...max_total_sequence_length}
+      enforce_eager: false
+      kv_cache_dtype: auto
+      http_server_serving_chat_kwargs:
+        enable_auto_tools: true
+        tool_parser: qwen3_coder
+        reasoning_parser: qwen3
+    vllm_kwargs:
+      mamba_ssm_cache_dtype: float32
+      limit_mm_per_prompt:
+        image: 0
+        video: 0
+    colocated:
+      enabled: true
+
+teacher:
+  model_name: ${policy.model_name}
+  tokenizer:
+    name: ${policy.model_name}
+    chat_template_kwargs: null
+  train_micro_batch_size: 1
+  logprob_batch_size: 1
+  max_total_sequence_length: ${policy.max_total_sequence_length}
+  logprob_chunk_size: ${policy.logprob_chunk_size}
+  offload_optimizer_for_logprob: true
+  sequence_packing:
+    enabled: false
+  dynamic_batching:
+    enabled: false
+  megatron_cfg:
+    empty_unused_memory_level: 1
+    activation_checkpointing: true
+    tensor_model_parallel_size: ${policy.megatron_cfg.tensor_model_parallel_size}
+    pipeline_model_parallel_size: ${policy.megatron_cfg.pipeline_model_parallel_size}
+    context_parallel_size: ${policy.megatron_cfg.context_parallel_size}
+    sequence_parallel: ${policy.megatron_cfg.sequence_parallel}
+    apply_rope_fusion: ${policy.megatron_cfg.apply_rope_fusion}
+    bias_activation_fusion: ${policy.megatron_cfg.bias_activation_fusion}
+    defer_fp32_logits: ${policy.megatron_cfg.defer_fp32_logits}
+    gradient_accumulation_fusion: false
+
+data:
+  max_input_seq_length: null
+  shuffle: true
+  num_workers: 1
+  train:
+    dataset_name: NemoGymDataset
+    data_path: /path/to/opd-blend/train.jsonl
+  validation: null
+  default:
+    dataset_name: NemoGymDataset
+    env_name: nemo_gym
+    prompt_file: null
+    system_prompt_file: null
+    processor: nemo_gym_data_processor
+
+logger:
+  log_dir: /path/to/results/qaopd-qwen38-27b/logs
+  wandb_enabled: false
+  tensorboard_enabled: true
+  mlflow_enabled: false
+  monitor_gpus: true
+
+cluster:
+  gpus_per_node: 4
+  num_nodes: 8
+
+# Smoke overrides (save / reload / resume and refit, not memory or speed):
+#   distillation.num_prompts_per_step=32 distillation.max_num_steps=2
+#   policy.train_global_batch_size=32 policy.max_total_sequence_length=8192
+#   policy.megatron_cfg.context_parallel_size=1 checkpointing.save_period=2
