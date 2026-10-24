@@ -96,7 +96,9 @@ policy:
       clip_grad: ${policy.max_grad_norm}
     scheduler:
       lr_decay_style: cosine
-      lr_decay_iters: ${distillation.max_num_steps}
+      # Fixed, not ${distillation.max_num_steps}: Megatron checks the restored schedule against the
+      # config, so tying it to max_num_steps would break resuming an extended run.
+      lr_decay_iters: 100
       lr_warmup_iters: 20
       lr_warmup_init: 1.0e-7
   make_sequence_length_divisible_by: ${mul:${mul:${.megatron_cfg.tensor_model_parallel_size}, ${.megatron_cfg.context_parallel_size}}, 2}
