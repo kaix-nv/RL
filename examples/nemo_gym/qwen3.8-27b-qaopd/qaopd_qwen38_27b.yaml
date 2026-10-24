@@ -69,6 +69,9 @@ policy:
   quant_calib_size: 512
   quant_batch_size: 1
   quant_sequence_length: 4096
+  # Quantize the TE layer spec, as every NeMo-RL QA recipe does. The ModelOpt spec splits out
+  # layernorms that Bridge's Qwen3.5 MTP mappings do not name, and HF import fails.
+  disable_modelopt_layer_spec: true
 
   megatron_cfg:
     empty_unused_memory_level: 1
@@ -84,6 +87,8 @@ policy:
     bias_activation_fusion: false
     defer_fp32_logits: true
     gradient_accumulation_fusion: false
+    # The MTP head is not distilled (and stays BF16 in the deployed checkpoint).
+    mtp_num_layers: 0
     optimizer:
       lr: 1.0e-5
       min_lr: 2.0e-6
@@ -154,6 +159,7 @@ teacher:
     bias_activation_fusion: ${policy.megatron_cfg.bias_activation_fusion}
     defer_fp32_logits: ${policy.megatron_cfg.defer_fp32_logits}
     gradient_accumulation_fusion: false
+    mtp_num_layers: 0
 
 data:
   max_input_seq_length: null
