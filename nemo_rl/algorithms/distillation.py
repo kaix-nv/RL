@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and limitations.
 # limitations under the License.
+import gc
 import os
 import warnings
 from concurrent.futures import ThreadPoolExecutor
@@ -986,6 +987,7 @@ def _distillation_train_impl(
                     )
                     train_data["teacher_topk_logits"] = teacher_topk["topk_logits"]
                     train_data["teacher_topk_indices"] = teacher_topk["topk_indices"]
+                    del teacher_topk
 
                 print("▶ Preparing for training...", flush=True)
                 with timer.time("training_prep"):
@@ -1007,6 +1009,9 @@ def _distillation_train_impl(
                         loss_fn,
                         timer=timer,
                     )
+                # The teacher top-k tensors are [B, S, k] at the batch's padded length (tens of GB at
+                # 65K tokens); release them before the next rollout instead of holding them a step.
+                del train_data["teacher_topk_logits"], train_data["teacher_topk_indices"]
 
                 is_last_step = (total_steps + 1 >= max_steps) or (
                     (current_epoch + 1 == max_epochs)
@@ -1230,6 +1235,9 @@ def _distillation_train_impl(
                 step_finished=True,
             )
 
+            # Large batch tensors can sit in reference cycles until a full collection; free them
+            # every step so driver host memory does not accumulate across steps.
+            gc.collect()
             timer.reset()
             current_step += 1
             total_steps += 1

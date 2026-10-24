@@ -3223,6 +3223,17 @@ class MegatronPolicyWorkerImpl(
         topk_indices = broadcasted["topk_indices"]
 
         no_grad.__exit__(None, None, None)
+        # Policy.get_topk_logits keeps one result per data-parallel group (output replicated over
+        # TP/CP/PP), but every worker's result is fetched to the driver. Replicas send a placeholder
+        # so the driver does not pull TP x CP x PP copies of [B, S, k] logits and indices.
+        if (
+            parallel_state.get_tensor_model_parallel_rank() != 0
+            or parallel_state.get_context_parallel_rank() != 0
+            or parallel_state.get_pipeline_model_parallel_rank() != 0
+        ):
+            return BatchedDataDict(
+                {"topk_logits": torch.empty(0), "topk_indices": torch.empty(0)}
+            )
         return BatchedDataDict.from_batches(
             [{"topk_logits": topk_logits.cpu(), "topk_indices": topk_indices.cpu()}]
         )
