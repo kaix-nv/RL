@@ -9,8 +9,8 @@
 # Every path below must be absolute and visible to Ray workers. Placeholders (/path/to/...) are
 # set by the launcher or on the command line.
 #
-# Status: unvalidated. Full-length (65K) memory and the dense W4A4 + GatedDeltaNet native refit
-# path have not been run; start with the short smoke overrides at the bottom of this file.
+# Status: real-quant refit, save/resume and export validated in 2-node smokes. The first full
+# 65K run (r1-v1, 8 GPU nodes plus a dedicated head node) is in progress.
 defaults:
   - ../../modelopt/qa_distillation_math_megatron.yaml
   - gym_env.yaml
@@ -58,8 +58,11 @@ policy:
   # layouts, which perturbs teacher targets at the scale of the KD loss itself.
   sequence_packing:
     enabled: false
+  # Dynamic batching groups length-sorted, right-padded rows into microbatches of up to
+  # max_total_sequence_length tokens, each trimmed to its own longest row. Without it every row
+  # runs at the batch's longest length (65K once one rollout hits the cap; mean is ~9K).
   dynamic_batching:
-    enabled: false
+    enabled: true
 
   # ModelOpt recipe (Megatron leaf names); see modelopt_recipes/models/Qwen/Qwen3.8-27B/qaopd/.
   # r1_mcore = NVFP4 W4A4 on every projection; r0_mcore = FP8 attention / GatedDeltaNet.
@@ -151,7 +154,7 @@ teacher:
   sequence_packing:
     enabled: false
   dynamic_batching:
-    enabled: false
+    enabled: ${policy.dynamic_batching.enabled}
   megatron_cfg:
     empty_unused_memory_level: 1
     activation_checkpointing: true
