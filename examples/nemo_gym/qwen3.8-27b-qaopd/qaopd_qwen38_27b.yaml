@@ -75,9 +75,12 @@ policy:
     activation_checkpointing: true
     tensor_model_parallel_size: 4
     pipeline_model_parallel_size: 1
-    context_parallel_size: 4
+    # NeMo-RL context parallelism requires sequence packing, which is off (see above). At 65K
+    # tokens, full recompute plus chunked logprobs fit on a 288 GB GB300 without CP.
+    context_parallel_size: 1
     sequence_parallel: true
-    apply_rope_fusion: true
+    # As in the Qwen3.5 dense Megatron recipes.
+    apply_rope_fusion: false
     bias_activation_fusion: false
     defer_fp32_logits: true
     gradient_accumulation_fusion: false
@@ -181,4 +184,4 @@ cluster:
 # Smoke overrides (save / reload / resume and refit, not memory or speed):
 #   distillation.num_prompts_per_step=32 distillation.max_num_steps=2
 #   policy.train_global_batch_size=32 policy.max_total_sequence_length=8192
-#   policy.megatron_cfg.context_parallel_size=1 checkpointing.save_period=2
+#   checkpointing.save_period=2 data.train.data_path=<prompts under 6K tokens>
