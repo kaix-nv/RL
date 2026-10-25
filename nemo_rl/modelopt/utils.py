@@ -53,6 +53,44 @@ def prepare_real_quant_generation_config(policy: Any, generation_config: dict) -
     hf_overrides["quantization_config"] = copy.deepcopy(quantization_config)
 
 
+def keep_quantized_output_layer_extra_state() -> None:
+    """Let a quantized output_layer (lm_head) be saved and loaded as a Megatron checkpoint.
+
+    ``GPTModel.sharded_state_dict`` drops ``output_layer._extra_state`` and asserts it is empty,
+    but a quantized output_layer keeps its ModelOpt quantizer state there. ModelOpt patches the
+    method (``keep_gpt_output_layer_extra_state``) only when its body matches a statement
+    fingerprint of older megatron-core; megatron-core main binds the payload to ``data`` before
+    the assert (one more assignment), so ModelOpt 0.48.0rc1 skips the patch and saving fails.
+    Accept that body too, then let ModelOpt apply its own patch.
+
+    TODO: drop once the image's ModelOpt accepts the newer body.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from megatron.core.models.gpt.gpt_model import GPTModel
+    from modelopt.torch.quantization.plugins import megatron as mtq_megatron
+
+    patch = getattr(mtq_megatron, "keep_gpt_output_layer_extra_state", None)
+    expected = getattr(mtq_megatron, "_GPT_SSD_STATEMENTS", None)
+    if patch is None or not isinstance(expected, list):
+        return  # ModelOpt without the patch, or one that already accepts several bodies
+    func = ast.parse(textwrap.dedent(inspect.getsource(GPTModel.sharded_state_dict))).body[0]
+    body = func.body
+    if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+        body = body[1:]  # docstring
+    kinds = [type(stmt).__name__ for stmt in body]
+    if kinds == ["Assign"] + expected:
+        mtq_megatron._GPT_SSD_STATEMENTS = kinds
+        patch.cache_clear()
+        if not patch():
+            raise RuntimeError(
+                "ModelOpt did not patch GPTModel.sharded_state_dict; a quantized "
+                "output_layer cannot be checkpointed"
+            )
+
+
 def resolve_quant_cfg(quant_cfg: str) -> dict[str, Any]:
     """Resolve a quantization config string into a dict consumable by ``mtq.quantize``.
 

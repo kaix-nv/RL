@@ -43,7 +43,10 @@ from nemo_rl.modelopt.models.policy.workers.utils import (
     quantize_model,
     symlink_pre_quantized_model,
 )
-from nemo_rl.modelopt.utils import MODELOPT_REAL_QUANT_REFIT_TIMEOUT_MS
+from nemo_rl.modelopt.utils import (
+    MODELOPT_REAL_QUANT_REFIT_TIMEOUT_MS,
+    keep_quantized_output_layer_extra_state,
+)
 from nemo_rl.models.policy.utils import get_runtime_env_for_policy_worker
 from nemo_rl.models.policy.workers.megatron_policy_worker import (
     MegatronPolicyWorkerImpl,
@@ -170,6 +173,8 @@ class MegatronQuantPolicyWorker(MegatronPolicyWorkerImpl):
         # Enables Megatron-Bridge's Megatron->HF weight name mappings for
         # ModelOpt quantizer state (e.g. amax).
         os.environ["ENABLE_BRIDGE_QUANT_MAPPING"] = "1"
+        # Before the HF import save, PTQ and any checkpoint load or save.
+        keep_quantized_output_layer_extra_state()
         self._patch_validate_model_paths()
         self._patch_setup_model_and_optimizer()
         # Hooks read by MegatronPolicyWorkerImpl.__init__ via getattr().

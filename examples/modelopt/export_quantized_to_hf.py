@@ -47,6 +47,10 @@ def main() -> None:
     upstream_dir = str(UPSTREAM_EXPORT.parent)
     if upstream_dir not in sys.path:
         sys.path.insert(0, upstream_dir)
+    # Loading a checkpoint whose output_layer is quantized needs its _extra_state kept.
+    from nemo_rl.modelopt.utils import keep_quantized_output_layer_extra_state
+
+    keep_quantized_output_layer_extra_state()
     runpy.run_path(str(UPSTREAM_EXPORT), run_name="__main__")
 
 
