@@ -1,0 +1,272 @@
+# QAOPD path (b): quantization-aware on-policy distillation of Qwen3.8-27B through async GRPO with
+# the MOPD advantage estimator and a frozen BF16 self-teacher.
+#
+# Same student, recipe, data, Gym wiring (gym_env.yaml), lengths, sampling, LR schedule and policy
+# parallelism as qaopd_qwen38_27b.yaml (path a). The objective and the runtime differ:
+#   - Objective: REINFORCE on the per-token advantage sg[log p_teacher(y_t) - log p_student(y_t)],
+#     using the teacher's log-probability of the sampled token only, instead of reverse KL over the
+#     teacher's top 300. Both estimate the per-token reverse KL gradient; this one is noisier.
+#   - Runtime: async GRPO. Training, vLLM and the teacher each get dedicated nodes, and the teacher
+#     scores each rollout as soon as it finishes. Step k >= 1 trains on rollouts from weights k-1,
+#     so the loss carries an importance-sampling gate that path (a) does not have.
+#
+# Run: examples/nemo_gym/run_grpo_nemo_gym.py --config <this file>
+# Every path below must be absolute and visible to Ray workers. Placeholders (/path/to/...) are
+# set by the launcher or on the command line.
+#
+# Status: draft, not yet run. The async collector scores rollouts through
+# TeacherWorkerGroup.get_logprobs, which now shards with dynamic batching like the policy; the
+# teacher copies policy.dynamic_batching.enabled.
+defaults:
+  - ../../modelopt/qa_grpo_math_megatron.yaml
+  - gym_env.yaml
+
+grpo:
+  num_prompts_per_step: 256
+  num_generations_per_prompt: 1
+  # Ignored on the Gym path: the collector passes max_rollout_turns=None and Gym owns turn limits.
+  max_rollout_turns: 1
+  max_num_steps: 100
+  max_num_epochs: 1
+  val_period: -1
+  val_at_start: false
+  val_at_end: false
+  # run_grpo_nemo_gym.py rejects anything but null.
+  max_val_samples: null
+  seed: 42
+  # No reference model: the teacher signal is the whole objective (no reference KL penalty).
+  skip_reference_policy_logprobs_calculation: true
+  # Path (a) also trains on length-capped rollouts. First ablation: true, which zeroes truncated
+  # rows' sample_mask (no advantage, no loss) after the teacher has already scored them.
+  overlong_filtering: false
+  # No sequence-level train/rollout mismatch filter, as in path (a). The MOPD recipes use 2.0.
+  seq_logprob_error_threshold: null
+  async_grpo:
+    enabled: true
+    # The minimum. Generation runs one weight version ahead of training, so step k >= 1 trains on
+    # rollouts from weights k-1 (steps 0 and 1 both use weights 0). Sync grpo_train never queries
+    # the teacher, so a strictly on-policy MOPD run is not available.
+    max_trajectory_age_steps: 1
+    # Refit waits for every pending rollout to finish, so each rollout comes from a single weight
+    # version. A real-quant refit into paused vLLM requests is also unvalidated.
+    in_flight_weight_updates: false
+    recompute_kv_cache_after_weight_updates: true
+    # As in path (a), any rollout failure stops the run.
+    max_generation_failures: 0
+  adv_estimator:
+    name: opd
+    # Plain MOPD. Values below 1 distill toward a teacher/student mixture (TROPD).
+    proximal_teacher_alpha: 1.0
+    # No baseline, as in path (a).
+    subtract_global_baseline: false
+
+loss_fn:
+  reference_policy_kl_penalty: 0.0
+  # REINFORCE form (MOPD Eq. 7). With one optimizer step per rollout batch the PPO ratio is 1
+  # anyway; this only drops clipping driven by kernel nondeterminism.
+  disable_ppo_ratio: true
+  # Required by async GRPO. Weights each token by p_train / p_rollout, which covers both the
+  # one-step lag and the fake-quant (Megatron) vs real-quant (vLLM NVFP4) mismatch. Path (a)
+  # trains on the same real-quant rollouts without this term.
+  use_importance_sampling_correction: true
+  # ICE-POP, as in the MOPD recipes: tokens whose weight is outside [0.2, 5.0] get no gradient.
+  truncated_importance_sampling_type: icepop
+  truncated_importance_sampling_ratio: 5.0
+  truncated_importance_sampling_ratio_min: 0.2
+  # Must stay off: the OPD advantage subtracts a real student logprob, and this flag would zero it.
+  force_on_policy_ratio: false
+  token_level_loss: true
+  # Only affects the reference KL term, which is off.
+  use_on_policy_kl_approximation: false
+
+on_policy_distillation:
+  enabled: true
+  # Self-teacher: every Gym agent falls back to this one alias.
+  teacher_model_by_agent_name:
+    bf16_self_teacher: ${policy.model_name}
+  default_teacher_alias: bf16_self_teacher
+  strict_agent_name_match: false
+  deduplicate_shared_teacher_checkpoints: true
+  non_colocated_teachers:
+    enabled: true
+    # The teacher worker deep-copies the policy config (megatron_cfg, logprob_chunk_size, packing,
+    # dynamic batching, MTP off, rope/bias fusion off) and drops quant_cfg, so it runs BF16 with
+    # path (a)'s teacher knobs. Only the keys below are its own.
+    default_teacher_cfg:
+      # Each rollout is scored alone (one generation per prompt), and the collector pads every
+      # call to the teacher's data-parallel size by repeating the row. TP4 x DP1 computes no
+      # copies; DP > 1 would. Teacher nodes are reserved whole, so fewer GPUs would sit idle.
+      tensor_model_parallel_size: 4
+      pipeline_model_parallel_size: 1
+      context_parallel_size: 1
+      expert_model_parallel_size: 1
+      num_nodes: 1
+      gpus_per_node: 4
+      # Not read by the teacher worker; it runs at policy.precision (bfloat16).
+      precision: bf16
+      micro_batch_size: 1
+
+# The Gym path drops rows flagged mask_sample from the loss; distillation never reads the flag.
+env:
+  should_mask_flagged_samples: false
+
+checkpointing:
+  enabled: true
+  checkpoint_dir: /path/to/results/qaopd-qwen38-27b-mopd
+  metric_name: null
+  keep_top_k: null
+  save_period: 10
+  save_optimizer: true
+
+policy:
+  model_name: /path/to/Qwen3.8-27B
+  tokenizer:
+    name: ${..model_name}
+    chat_template_kwargs: null
+  train_global_batch_size: 256
+  train_micro_batch_size: 1
+  generation_batch_size: 64
+  logprob_batch_size: 1
+  # Prompts are capped at 16K tokens when the training JSONL is built, leaving at least 48K for
+  # the rollout; Qwen3.8 thinks at reasoning_effort=xhigh by default.
+  max_total_sequence_length: 65536
+  logprob_chunk_size: 2048
+  offload_optimizer_for_logprob: true
+  # Packing is off: GatedDeltaNet kernels are not bit-reproducible across packed (cu_seqlens)
+  # layouts, which perturbs teacher targets at the scale of the KD loss itself.
+  sequence_packing:
+    enabled: false
+  # Dynamic batching groups length-sorted, right-padded rows into microbatches of up to
+  # max_total_sequence_length tokens, each trimmed to its own longest row. Without it every row
+  # runs at the batch's longest length (65K once one rollout hits the cap; mean is ~9K).
+  # The teacher inherits this setting.
+  dynamic_batching:
+    enabled: true
+
+  # ModelOpt recipe (Megatron leaf names); see modelopt_recipes/models/Qwen/Qwen3.8-27B/qaopd/.
+  # r1_mcore = NVFP4 W4A4 on every projection; r0_mcore = FP8 attention / GatedDeltaNet.
+  quant_cfg: /path/to/Model-Optimizer/modelopt_recipes/models/Qwen/Qwen3.8-27B/qaopd/r1_mcore.yaml
+  # Same calibration set as the HF PTQ baselines (hf_ptq.py), so QAOPD starts from the same scales.
+  quant_calib_data: nemotron-post-training-v3
+  quant_calib_size: 512
+  quant_batch_size: 1
+  quant_sequence_length: 4096
+  # Quantize the TE layer spec, as every NeMo-RL QA recipe does. The ModelOpt spec splits out
+  # layernorms that Bridge's Qwen3.5 MTP mappings do not name, and HF import fails.
+  disable_modelopt_layer_spec: true
+
+  megatron_cfg:
+    empty_unused_memory_level: 1
+    activation_checkpointing: true
+    tensor_model_parallel_size: 4
+    pipeline_model_parallel_size: 1
+    # NeMo-RL context parallelism requires sequence packing, which is off (see above). At 65K
+    # tokens, full recompute plus chunked logprobs fit on a 288 GB GB300 without CP.
+    context_parallel_size: 1
+    sequence_parallel: true
+    # As in the Qwen3.5 dense Megatron recipes.
+    apply_rope_fusion: false
+    bias_activation_fusion: false
+    defer_fp32_logits: true
+    gradient_accumulation_fusion: false
+    # The MTP head is not distilled (and stays BF16 in the deployed checkpoint).
+    mtp_num_layers: 0
+    # Path (a)'s checkpoint settings, which its save/resume smokes validated. The GRPO exemplar
+    # turns both on.
+    checkpoint:
+      async_save: false
+      ckpt_assume_constant_structure: false
+    optimizer:
+      lr: 1.0e-5
+      min_lr: 2.0e-6
+      weight_decay: 0.0
+      clip_grad: ${policy.max_grad_norm}
+    scheduler:
+      lr_decay_style: cosine
+      lr_decay_iters: 100
+      # On resume, take the schedule from this config instead of asserting it equals the
+      # checkpoint's. NeMo-RL derives the weight-decay horizon from max_num_steps, so extending a
+      # run would otherwise fail Megatron's scheduler consistency check.
+      override_opt_param_scheduler: true
+      lr_warmup_iters: 20
+      lr_warmup_init: 1.0e-7
+  make_sequence_length_divisible_by: ${mul:${mul:${.megatron_cfg.tensor_model_parallel_size}, ${.megatron_cfg.context_parallel_size}}, 2}
+
+  generation:
+    backend: vllm
+    max_new_tokens: ${..max_total_sequence_length}
+    # On-policy: sample from the student's full distribution.
+    temperature: 1.0
+    top_p: 1.0
+    top_k: null
+    real_quant: true
+    quant_cfg: null
+    # Required for the non-colocated (NCCL) refit below.
+    real_quant_export_cpu_offload: true
+    vllm_cfg:
+      # Async GRPO and the non-colocated teacher both require the async engine.
+      async_engine: true
+      expose_http_server: true
+      # The NVFP4 27B student fits on one GPU; more replicas means more rollout throughput.
+      tensor_parallel_size: 1
+      pipeline_parallel_size: 1
+      expert_parallel_size: 1
+      # vLLM owns its GPUs here (path a: 0.6, shared with Megatron). The rest leaves room for the
+      # NCCL refit buffers.
+      gpu_memory_utilization: 0.8
+      max_model_len: ${...max_total_sequence_length}
+      enforce_eager: false
+      kv_cache_dtype: auto
+      http_server_serving_chat_kwargs:
+        enable_auto_tools: true
+        tool_parser: qwen3_coder
+        reasoning_parser: qwen3
+    vllm_kwargs:
+      mamba_ssm_cache_dtype: float32
+      limit_mm_per_prompt:
+        image: 0
+        video: 0
+    # Async GRPO with vLLM requires dedicated generation nodes; weights reach vLLM over NCCL.
+    colocated:
+      enabled: false
+      resources:
+        gpus_per_node: 4
+        num_nodes: 3
+
+data:
+  max_input_seq_length: null
+  shuffle: true
+  num_workers: 1
+  train:
+    dataset_name: NemoGymDataset
+    data_path: /path/to/opd-blend/train.jsonl
+  validation: null
+  default:
+    dataset_name: NemoGymDataset
+    env_name: nemo_gym
+    prompt_file: null
+    system_prompt_file: null
+    processor: nemo_gym_data_processor
+
+logger:
+  log_dir: /path/to/results/qaopd-qwen38-27b-mopd/logs
+  wandb_enabled: false
+  tensorboard_enabled: true
+  mlflow_enabled: false
+  monitor_gpus: true
+
+# 8 GPU nodes, plus the dedicated head node for the driver, the Ray head and the Gym servers.
+# Setup reserves the teacher nodes first, then generation (policy.generation.colocated.resources),
+# and gives the rest to training: teacher 1 node (TP4), vLLM 3 nodes (12 x TP1), training 4 nodes
+# (TP4 x DP4). The training data-parallel size must divide 256.
+cluster:
+  gpus_per_node: 4
+  num_nodes: 8
+
+# Smoke overrides (refit, teacher scoring, save / reload / resume; not memory or speed). 3 GPU
+# nodes: teacher 1, vLLM 1, training 1 (TP4 x DP1):
+#   cluster.num_nodes=3 policy.generation.colocated.resources.num_nodes=1
+#   grpo.num_prompts_per_step=32 grpo.max_num_steps=2
+#   policy.train_global_batch_size=32 policy.max_total_sequence_length=8192
+#   checkpointing.save_period=1 data.train.data_path=<prompts under 6K tokens>
+# Resume: resubmit the same run with grpo.max_num_steps=3.

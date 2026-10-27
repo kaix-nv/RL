@@ -380,7 +380,18 @@ class TeacherWorkerGroup:
         dp_size = self.sharding_annotations.get_axis_size("data_parallel")
         mbs = micro_batch_size or self._micro_batch_size
 
-        if self.use_sequence_packing:
+        # Same precedence as Policy._shard_for_logprob: without dynamic_batching_args a dynamic-
+        # batching worker asserts on the missing micro_batch_indices.
+        if self.use_dynamic_batches:
+            self.dynamic_batching_args["max_tokens_per_microbatch"] = self.cfg[
+                "dynamic_batching"
+            ]["logprob_mb_tokens"]
+            sharded_data, unsorted_data_indices = data.shard_by_batch_size(
+                dp_size,
+                batch_size=None,
+                dynamic_batching_args=self.dynamic_batching_args,
+            )
+        elif self.use_sequence_packing:
             self.sequence_packing_args["max_tokens_per_microbatch"] = self.cfg[
                 "sequence_packing"
             ]["logprob_mb_tokens"]
