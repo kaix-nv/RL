@@ -105,8 +105,12 @@ def test_reencoded_segment_straight_through_and_cached(monkeypatch):
 
     calls = []
     fake = types.ModuleType("nemo_rl.modelopt.gguf_codes")
-    fake.encode = lambda qtype, blocks, d: (calls.append(qtype), torch.round(blocks / d[:, None].float()))[1]
+    fake.encode = lambda qtype, blocks, d, importance=None: (
+        calls.append(qtype),
+        torch.round(blocks / d[:, None].float()),
+    )[1]
     fake.decode = lambda qtype, packed: packed * 0.5
+    fake.llama_cpp_weights = None
     monkeypatch.setitem(sys.modules, "nemo_rl.modelopt.gguf_codes", fake)
 
     block = 256
@@ -131,6 +135,43 @@ def test_reencoded_segment_straight_through_and_cached(monkeypatch):
         w.add_(1.0)
     gguf_frozen._Project.apply(w, frozen)
     assert calls == ["IQ2_XXS", "IQ2_XXS"]  # optimizer update: re-encoded
+
+
+def test_reencoded_segment_passes_imatrix_weights(monkeypatch):
+    """A segment with imatrix second moments searches with llama.cpp's weights of its blocks."""
+    import sys
+    import types
+
+    seen = {}
+
+    def encode(qtype, blocks, d, importance=None):
+        seen["blocks"], seen["importance"] = blocks.clone(), importance
+        return blocks
+
+    fake = types.ModuleType("nemo_rl.modelopt.gguf_codes")
+    fake.encode = encode
+    fake.decode = lambda qtype, packed: packed
+    fake.llama_cpp_weights = lambda qtype, blocks, e2: (
+        e2.reshape(-1, 256).repeat(blocks.shape[0] // (e2.numel() // 256), 1) + blocks
+    )
+    monkeypatch.setitem(sys.modules, "nemo_rl.modelopt.gguf_codes", fake)
+
+    e2 = torch.rand(512)
+    seg = gguf_frozen._Segment("b", slice(0, 3), None, None, None, 256, "IQ2_XXS", torch.ones(3, 2).half(), e2)
+    w = torch.randn(3, 512)
+    gguf_frozen.FrozenCodes([seg]).quantize(w)
+    torch.testing.assert_close(seen["blocks"], w.reshape(-1, 256))
+    torch.testing.assert_close(seen["importance"], e2.reshape(-1, 256).repeat(3, 1) + w.reshape(-1, 256))
+
+
+def test_llama_cpp_weights():
+    """imatrix[col] * sqrt(sigma2 + x^2), sigma2 = c * mean(x^2) per 256-value block."""
+    gguf_codes = pytest.importorskip("nemo_rl.modelopt.gguf_codes")
+    x = torch.randn(6, 256)
+    e2 = torch.rand(512)
+    for qtype, c in (("IQ2_XXS", 1.0), ("IQ1_S", 2.0)):
+        want = e2.reshape(2, 256).repeat(3, 1) * torch.sqrt(c * x.square().mean(1, keepdim=True) + x.square())
+        torch.testing.assert_close(gguf_codes.llama_cpp_weights(qtype, x, e2), want)
 
 
 def test_freeze_untrained_keeps_downstream_gradients():

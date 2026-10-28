@@ -69,6 +69,7 @@ class _Segment:
     block: int  # 256, or 32 for Q8_0
     qtype: str | None = None  # re-encoded GGUF type; None: frozen codes, projected
     d: torch.Tensor | None = None  # FP16 [rows, blocks] scales of a re-encoded segment
+    imp: torch.Tensor | None = None  # float32 [cols] imatrix E[x^2] of a re-encoded segment's columns
 
 
 def _project_blocks(x: torch.Tensor, u: torch.Tensor, v: torch.Tensor | None, block: int) -> torch.Tensor:
@@ -134,7 +135,7 @@ class FrozenCodes:
         if self._cache is not None and self._cache[1].device != device and device.type == "cpu":
             self._cache = (self._cache[0], self._cache[1].to(device))
         for seg in self.segments:
-            for field in ("rows", "cols", "u", "v", "d"):
+            for field in ("rows", "cols", "u", "v", "d", "imp"):
                 t = getattr(seg, field)
                 if isinstance(t, torch.Tensor) and t.device != device:
                     setattr(seg, field, t.to(device))
@@ -174,9 +175,11 @@ class FrozenCodes:
             if seg.qtype is None:
                 q = self._project(xs, seg)
             else:
-                from nemo_rl.modelopt.gguf_codes import decode, encode
+                from nemo_rl.modelopt.gguf_codes import decode, encode, llama_cpp_weights
 
-                packed = encode(seg.qtype, xs.float().reshape(-1, seg.block), seg.d.reshape(-1))
+                blocks = xs.float().reshape(-1, seg.block)
+                importance = None if seg.imp is None else llama_cpp_weights(seg.qtype, blocks, seg.imp)
+                packed = encode(seg.qtype, blocks, seg.d.reshape(-1), importance)
                 q = decode(seg.qtype, packed).reshape(xs.shape)
             self._write(out, seg, q)
         if key is not None:
@@ -305,7 +308,9 @@ def _as_slice(idx: torch.Tensor) -> torch.Tensor | slice:
     return idx
 
 
-def _segment(frozen_dir: str, name: str, meta: dict, local_rows, hf_rows, hf_cols, reencode: bool) -> _Segment:
+def _segment(
+    frozen_dir: str, name: str, meta: dict, local_rows, hf_rows, hf_cols, reencode: bool, second_moment=None
+) -> _Segment:
     block = meta["block"]
     with safe_open(os.path.join(frozen_dir, name + ".safetensors"), framework="pt") as f:
         u = None if reencode else _read_rows(f, "u", hf_rows)
@@ -327,14 +332,17 @@ def _segment(frozen_dir: str, name: str, meta: dict, local_rows, hf_rows, hf_col
     if d is not None:
         d = d[:, starts // block].contiguous()
     cols = None if bool((order == torch.arange(order.numel())).all()) else order
-    return _Segment(name, _as_slice(local_rows), cols, u, v, block, meta["type"] if reencode else None, d)
+    imp = second_moment[gs].contiguous() if reencode and second_moment is not None else None
+    return _Segment(name, _as_slice(local_rows), cols, u, v, block, meta["type"] if reencode else None, d, imp)
 
 
-def attach_gguf_frozen(worker, frozen_dir: str) -> dict:
+def attach_gguf_frozen(worker, frozen_dir: str, imatrix: str | None = None) -> dict:
     """Give every enabled GGUF weight quantizer of the worker's model its frozen codes or scales.
 
     ``gguf_frozen`` quantizers project onto the file's codes. ``gguf_codes`` quantizers re-encode
-    IQ1/IQ2 blocks at the file's d and project the rest. Checks that every quantized GGUF tensor
+    IQ1/IQ2 blocks at the file's d and project the rest; with ``imatrix`` (safetensors of E[x^2] per
+    GGUF tensor and column, keyed by GGUF name; scripts/imatrix_to_safetensors.py) the re-encode
+    weights its search as llama.cpp's quantizer does. Checks that every quantized GGUF tensor
     except the token embedding is covered on this rank, and reports the relative distance of each
     weight to its quantized value: for a scale-only student loaded from the dequantized GGUF it is
     BF16 rounding (~2e-3), and O(1) means a wrong layout.
@@ -343,6 +351,10 @@ def attach_gguf_frozen(worker, frozen_dir: str) -> dict:
 
     index = json.load(open(os.path.join(frozen_dir, "index.json")))
     quantized = index["quantized"]
+    second_moments = None
+    if imatrix is not None:
+        with safe_open(imatrix, framework="pt") as f:
+            second_moments = {k: f.get_tensor(k) for k in f.keys()}
     tasks = worker.megatron_bridge.get_conversion_tasks([worker.model], exclude_param_patterns=("*_quantizer*",))
     covered, disabled, dist, scale_only = set(), [], {}, True
     for task in tasks:
@@ -370,7 +382,12 @@ def attach_gguf_frozen(worker, frozen_dir: str) -> dict:
             local = torch.nonzero(src == i).flatten()
             if local.numel():
                 reencode = backend == CODES_BACKEND and quantized[n]["type"] in CODE_TYPES
-                segments.append(_segment(frozen_dir, n, quantized[n], local, hrow[local], hcol, reencode))
+                e2 = None
+                if reencode and second_moments is not None:
+                    e2 = second_moments.get(quantized[n]["gguf"])
+                    if e2 is None:
+                        raise RuntimeError(f"{n}: imatrix has no entry for {quantized[n]['gguf']}")
+                segments.append(_segment(frozen_dir, n, quantized[n], local, hrow[local], hcol, reencode, e2))
                 covered.add(n)
         frozen = FrozenCodes(segments)
         frozen.to(task.param_weight.device)

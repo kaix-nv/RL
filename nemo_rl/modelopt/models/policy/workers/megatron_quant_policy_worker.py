@@ -218,7 +218,7 @@ class MegatronQuantPolicyWorker(MegatronPolicyWorkerImpl):
         # quantizers before the first forward or refit.
         if self.cfg.get("gguf_frozen"):
             start = time.perf_counter()
-            stats = attach_gguf_frozen(self, self.cfg["gguf_frozen"])
+            stats = attach_gguf_frozen(self, self.cfg["gguf_frozen"], self.cfg.get("gguf_imatrix"))
             if self.rank == 0:
                 print(
                     f"[gguf_frozen] {stats['weights']} weights, distance to quantized "

@@ -754,6 +754,11 @@ class PolicyConfig(TypedDict):
     # quantizers backend "gguf_frozen", and policy.model_name must be the dequantized GGUF;
     # the input embedding stays frozen. None or absent: no GGUF student.
     gguf_frozen: NotRequired[str | None]
+    # With a gguf_codes quant_cfg: safetensors of the imatrix's E[x^2] per GGUF tensor and input
+    # column (scripts/imatrix_to_safetensors.py). The IQ1/IQ2 re-encode then weights its search as
+    # llama.cpp's quantizer does, so policy.model_name may hold BF16 weights. None or absent: plain
+    # squared error.
+    gguf_imatrix: NotRequired[str | None]
     # If true, use standard Megatron layer specs while keeping ModelOpt
     # quantization enabled. Useful for faster QARL runs and logged in configs.
     disable_modelopt_layer_spec: NotRequired[bool]
