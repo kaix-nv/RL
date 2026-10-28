@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import os
+import weakref
 from dataclasses import dataclass
 
 import torch
@@ -51,6 +52,9 @@ BACKEND = "gguf_frozen"
 CODES_BACKEND = "gguf_codes"
 # Rows of a segment projected at a time, bounding the float32 temporaries.
 _CHUNK_ELEMENTS = 1 << 26
+# Quantizer -> FrozenCodes. Kept off the quantizer itself: ModelOpt serializes quantizer attributes
+# into Megatron checkpoints' extra state, which would pickle the code tables into every checkpoint.
+_FROZEN: "weakref.WeakKeyDictionary[TensorQuantizer, FrozenCodes]" = weakref.WeakKeyDictionary()
 
 
 @dataclass
@@ -123,22 +127,17 @@ class FrozenCodes:
         self._cache = None
 
     def to(self, device: torch.device | str) -> None:
+        # Host copies are pageable, not pinned: PyTorch's pinned allocator can round each block up
+        # to a power of two and keeps freed blocks, and with a BF16 student (vLLM backs its 50 GB
+        # of weights up to host memory while asleep) that overhead ran nodes out of host memory.
         device = torch.device(device)
-        pin = device.type == "cpu" and torch.cuda.is_available()
-        if self._cache is not None and pin and self._cache[1].device.type != "cpu":
-            q = self._cache[1]
-            self._cache = (self._cache[0], torch.empty(q.shape, dtype=q.dtype, pin_memory=True).copy_(q))
+        if self._cache is not None and self._cache[1].device != device and device.type == "cpu":
+            self._cache = (self._cache[0], self._cache[1].to(device))
         for seg in self.segments:
             for field in ("rows", "cols", "u", "v", "d"):
                 t = getattr(seg, field)
-                if not isinstance(t, torch.Tensor) or t.device == device:
-                    continue
-                if pin:
-                    # Blocking copy into pinned memory, so the reload can be asynchronous.
-                    t = torch.empty(t.shape, dtype=t.dtype, pin_memory=True).copy_(t)
-                else:
-                    t = t.to(device, non_blocking=True)
-                setattr(seg, field, t)
+                if isinstance(t, torch.Tensor) and t.device != device:
+                    setattr(seg, field, t.to(device))
 
     def _segment_input(self, x, seg):
         xs = x[seg.rows]
@@ -165,7 +164,9 @@ class FrozenCodes:
     def quantize(self, x: torch.Tensor) -> torch.Tensor:
         key = _checksum(x) if self.reencodes else None
         if key is not None and self._cache is not None and self._cache[0] == key:
-            return self._cache[1].to(device=x.device, dtype=x.dtype, non_blocking=True).detach()
+            if self._cache[1].device != x.device:
+                self._cache = (key, self._cache[1].to(x.device))
+            return self._cache[1].to(dtype=x.dtype).detach()
         self.to(x.device)
         out = x.clone()
         for seg in self.segments:
@@ -206,7 +207,7 @@ class _Project(torch.autograd.Function):
 
 
 def _fake_quant(inputs: torch.Tensor, quantizer: TensorQuantizer) -> torch.Tensor:
-    frozen = getattr(quantizer, "_gguf_frozen", None)
+    frozen = _FROZEN.get(quantizer)
     if frozen is None:
         raise RuntimeError(
             f"{BACKEND} weight quantizer has no frozen GGUF codes; "
@@ -376,7 +377,7 @@ def attach_gguf_frozen(worker, frozen_dir: str) -> dict:
         w = task.param_weight.detach()
         err = (frozen.quantize(w).float() - w.float()).norm() / w.float().norm().clamp_min(1e-30)
         dist[task.global_param_name] = float(err)
-        wq._gguf_frozen = frozen
+        _FROZEN[wq] = frozen
 
     expected = {n for n in quantized if not n.endswith("embed_tokens.weight")}
     if covered != expected:
@@ -395,10 +396,10 @@ def attach_gguf_frozen(worker, frozen_dir: str) -> dict:
 
 
 def offload_gguf_frozen(model: torch.nn.Module) -> None:
-    """Move every attached code table to pinned host memory; the next forward reloads it."""
+    """Move every attached code table and encode cache to host memory; the next forward reloads it."""
     for module in model.modules():
-        frozen = getattr(module, "_gguf_frozen", None)
-        if isinstance(frozen, FrozenCodes):
+        frozen = _FROZEN.get(module) if isinstance(module, TensorQuantizer) else None
+        if frozen is not None:
             frozen.to("cpu")
 
 
