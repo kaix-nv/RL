@@ -26,6 +26,8 @@ distillation:
   val_at_end: false
   max_val_samples: null
   topk_logits_k: 300
+  # Drop rollouts that hit the length limit (often repetition loops) from the loss.
+  overlong_filtering: false
   seed: 42
 
 loss_fn:

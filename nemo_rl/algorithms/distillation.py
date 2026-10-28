@@ -127,6 +127,10 @@ class DistillationConfig(BaseModel, extra="allow"):
     max_val_samples: int | None = 512  # None for NeMo-Gym compatibility
     topk_logits_k: int = 64
     seed: int = 42
+    # Drop rollouts that hit the generation length limit from the loss (as grpo.overlong_filtering).
+    # A truncated rollout is often a repetition loop; distilling the student toward the teacher on
+    # its own loops can reinforce them.
+    overlong_filtering: bool = False
 
 
 @dataclass
@@ -922,6 +926,15 @@ def _distillation_train_impl(
                     student_generation.finish_generation()
 
                 with timer.time("data_processing"):
+                    if master_config.distillation.overlong_filtering:
+                        truncated = torch.as_tensor(
+                            repeated_batch["truncated"], dtype=torch.bool
+                        )
+                        loss_multiplier = repeated_batch["loss_multiplier"].clone()
+                        loss_multiplier[truncated] = 0
+                        repeated_batch["loss_multiplier"] = loss_multiplier
+                        rollout_metrics["overlong_filtered"] = int(truncated.sum())
+
                     # Train on generated assistant turns, excluding prompt history.
                     for message_log in repeated_batch["message_log"]:
                         for message in message_log:
