@@ -904,12 +904,10 @@ class VllmInternalWorkerExtension(RefitBuilderInterface):
             self.zmq_socket = self.zmq_context.socket(  # pyrefly: ignore[implicitly-defined-attribute]  This class does not define __init__ so assignments like this should be ignored
                 zmq.REP
             )
-            self.zmq_socket.setsockopt(
-                zmq.SNDTIMEO, 120000
-            )  # set timeout to 120 seconds
-            self.zmq_socket.setsockopt(
-                zmq.RCVTIMEO, 120000
-            )  # set timeout to 120 seconds
+            # 600 s, as for ModelOpt real-quant refits: a GGUF student's sender re-encodes
+            # IQ1/IQ2 codebooks while it streams, which can leave minutes between messages.
+            self.zmq_socket.setsockopt(zmq.SNDTIMEO, 600000)
+            self.zmq_socket.setsockopt(zmq.RCVTIMEO, 600000)
             self.zmq_socket.setsockopt(zmq.LINGER, 0)
             self.zmq_socket.connect(self.get_zmq_address())
 

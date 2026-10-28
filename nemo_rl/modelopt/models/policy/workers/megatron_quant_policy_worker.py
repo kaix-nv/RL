@@ -17,6 +17,7 @@ import copy
 import hashlib
 import json
 import os
+import time
 import warnings
 from collections.abc import Generator, Mapping
 from contextlib import contextmanager
@@ -36,6 +37,12 @@ from modelopt.torch.quantization.nn.modules.quant_module import QuantModule
 from modelopt.torch.quantization.nn.modules.tensor_quantizer import TensorQuantizer
 
 import nemo_rl.models.policy.workers.megatron_policy_worker as megatron_policy_worker
+from nemo_rl.modelopt.gguf_frozen import (
+    attach_gguf_frozen,
+    freeze_untrained,
+    gradient_coverage,
+    offload_gguf_frozen,
+)
 from nemo_rl.modelopt.models.policy.workers.utils import (
     get_quantization_layer_spec,
     get_quantization_mamba_stack_spec,
@@ -151,9 +158,10 @@ def _set_quantization_model_specs(model_config, disable_modelopt_layer_spec: boo
 )  # pragma: no cover
 class MegatronQuantPolicyWorker(MegatronPolicyWorkerImpl):
     def maybe_init_zmq(self) -> None:
-        """Use a longer timeout only for ModelOpt real-quant refits."""
+        """Use a longer timeout for ModelOpt real-quant refits and GGUF students, whose
+        weight quantizers run slow export or codebook-search steps while streaming."""
         super().maybe_init_zmq()
-        if self._use_real_quant_refit():
+        if self._use_real_quant_refit() or self.cfg.get("gguf_frozen"):
             self.zmq_socket.setsockopt(
                 zmq.SNDTIMEO, MODELOPT_REAL_QUANT_REFIT_TIMEOUT_MS
             )
@@ -205,6 +213,20 @@ class MegatronQuantPolicyWorker(MegatronPolicyWorkerImpl):
             if self._use_real_quant_refit() and torch.distributed.get_world_size() > 1
             else None
         )
+
+        # A GGUF student trains block scales only: attach the frozen codes to its weight
+        # quantizers before the first forward or refit.
+        if self.cfg.get("gguf_frozen"):
+            start = time.perf_counter()
+            stats = attach_gguf_frozen(self, self.cfg["gguf_frozen"])
+            if self.rank == 0:
+                print(
+                    f"[gguf_frozen] {stats['weights']} weights, distance to quantized "
+                    f"max {stats['max_dist']:.2e} mean {stats['mean_dist']:.2e}; "
+                    f"disabled {len(stats['disabled'])}: {stats['disabled'][:4]}; "
+                    f"attach (layout probe + one quantization of every weight) "
+                    f"{time.perf_counter() - start:.0f} s"
+                )
 
         if hasattr(self, "reference_state_dict"):
             for name, item in self.model.state_dict().items():
@@ -299,6 +321,13 @@ class MegatronQuantPolicyWorker(MegatronPolicyWorkerImpl):
                 _set_quantization_model_specs(
                     megatron_cfg.model, disable_modelopt_layer_spec
                 )
+            if policy_cfg.get("gguf_frozen"):
+                # GGUF quantizes the input embedding, but it has no weight quantizer:
+                # keep it at its GGUF values.
+                kwargs["additional_pre_wrap_hooks"] = [
+                    *(kwargs.get("additional_pre_wrap_hooks") or []),
+                    freeze_untrained,
+                ]
 
             return original_setup_model_and_optimizer(
                 policy_cfg, megatron_cfg, *args, **kwargs
@@ -466,6 +495,28 @@ class MegatronQuantPolicyWorker(MegatronPolicyWorkerImpl):
             "MegatronQuantPolicyWorker does not support generate(). "
             "Use vLLM or SGLang as the generation backend instead."
         )
+
+    def train(self, *args, **kwargs):
+        """For a GGUF student, report how many trainable parameters got a gradient last step.
+
+        The base train() resets Megatron's per-bucket gradient bookkeeping first, so this reads
+        the previous step's: a frozen-embedding or bucket mix-up shows as missing parameters.
+        """
+        if self.cfg.get("gguf_frozen") and self.rank == 0:
+            seen, total, missing = gradient_coverage(self.model)
+            if seen:
+                print(
+                    f"[gguf_frozen] last step: {seen} of {total} trainable params got gradients; "
+                    f"missing from partial buckets: {missing[:8]}"
+                )
+        return super().train(*args, **kwargs)
+
+    def offload_after_refit(self):
+        """Also move GGUF frozen codes to host memory while vLLM generates."""
+        # Before the base offload, which returns cached GPU memory to the driver.
+        if self.cfg.get("gguf_frozen"):
+            offload_gguf_frozen(self.model)
+        super().offload_after_refit()
 
     def save_checkpoint(self, *args, **kwargs):
         """Save the checkpoint."""

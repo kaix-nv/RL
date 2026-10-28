@@ -749,6 +749,11 @@ class PolicyConfig(TypedDict):
     quant_calib_size: NotRequired[int | None]
     quant_batch_size: NotRequired[int | None]
     quant_sequence_length: NotRequired[int | None]
+    # Scale-only training of a llama.cpp GGUF student: the directory written by
+    # gguf_frozen.py (frozen codes in HF layout). quant_cfg must give the projection weight
+    # quantizers backend "gguf_frozen", and policy.model_name must be the dequantized GGUF;
+    # the input embedding stays frozen. None or absent: no GGUF student.
+    gguf_frozen: NotRequired[str | None]
     # If true, use standard Megatron layer specs while keeping ModelOpt
     # quantization enabled. Useful for faster QARL runs and logged in configs.
     disable_modelopt_layer_spec: NotRequired[bool]
