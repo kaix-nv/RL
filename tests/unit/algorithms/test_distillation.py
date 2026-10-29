@@ -604,6 +604,44 @@ def test_colocated_does_not_offload_student_optimizer_before_teacher_inference(
     mock_components["student_policy"].offload_before_refit.assert_not_called()
 
 
+def test_teacher_rollouts_skip_refit_and_offload_colocated_student(mock_components):
+    """rollout_policy=teacher never refits; the colocated student still leaves the GPUs."""
+    master_config = mock_components["master_config"]
+    master_config.distillation.max_num_steps = 2
+    master_config.distillation.rollout_policy = "teacher"
+    master_config.policy["generation"]["colocated"]["enabled"] = True
+    student_policy = mock_components["student_policy"]
+    student_generation = MagicMock()
+    student_generation.generate.return_value = student_policy.generate.return_value
+
+    manager = MagicMock()
+    manager.attach_mock(student_policy.offload_before_refit, "offload_before")
+    manager.attach_mock(student_policy.offload_after_refit, "offload_after")
+    manager.attach_mock(student_generation.prepare_for_generation, "wake")
+
+    with patch.object(distil_mod, "refit_policy_generation") as refit:
+        distillation_train(
+            student_policy,
+            mock_components["teacher_policy"],
+            student_generation,
+            mock_components["train_dataloader"],
+            mock_components["val_dataloader"],
+            mock_components["tokenizer"],
+            mock_components["loss_fn"],
+            mock_components["task_to_env"],
+            mock_components["val_task_to_env"],
+            mock_components["logger"],
+            mock_components["checkpointer"],
+            _initial_distillation_save_state(),
+            master_config,
+        )
+
+    refit.assert_not_called()
+    assert student_policy.train.call_count == 2
+    call_names = [name for name, _, _ in manager.mock_calls]
+    assert call_names == ["offload_before", "offload_after", "wake"] * 2
+
+
 def test_validate_function(mock_components):
     """Test independent validation function to ensure validation logic correctness."""
     # Run validation

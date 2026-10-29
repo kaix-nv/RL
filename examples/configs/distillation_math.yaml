@@ -12,6 +12,12 @@ distillation:
     max_val_samples: 512
     topk_logits_k: 64
     seed: 42
+    # Drop rollouts that hit the generation length limit from the loss (as grpo.overlong_filtering).
+    overlong_filtering: false
+    # Who samples the training rollouts: "student" (on-policy distillation) or "teacher" (the
+    # teacher checkpoint is loaded into vLLM and never refit, i.e. offline distillation on teacher
+    # samples). "teacher" requires policy.generation.backend=vllm and real_quant=false.
+    rollout_policy: student
 
 loss_fn:
     kl_type: "mixed" # forward, reverse, mixed

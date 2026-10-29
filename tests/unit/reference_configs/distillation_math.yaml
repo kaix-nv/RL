@@ -12,6 +12,8 @@ distillation:
     max_val_samples: 512
     topk_logits_k: 64
     seed: 42
+    overlong_filtering: false
+    rollout_policy: student
 
 loss_fn:
     kl_type: "mixed" # forward, reverse, mixed

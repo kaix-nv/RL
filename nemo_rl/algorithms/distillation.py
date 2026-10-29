@@ -16,7 +16,7 @@ import os
 import warnings
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, fields
-from typing import Any, Optional, TypeVar, cast
+from typing import Any, Literal, Optional, TypeVar, cast
 
 import numpy as np
 import ray
@@ -131,6 +131,10 @@ class DistillationConfig(BaseModel, extra="allow"):
     # A truncated rollout is often a repetition loop; distilling the student toward the teacher on
     # its own loops can reinforce them.
     overlong_filtering: bool = False
+    # Which model samples the training rollouts. "student" is on-policy distillation. "teacher"
+    # loads the teacher checkpoint into the generation engine and never refits it, so the student
+    # trains on teacher samples (offline QAD) with the same prompts, loss and teacher.
+    rollout_policy: Literal["student", "teacher"] = "student"
 
 
 @dataclass
@@ -556,7 +560,18 @@ def setup(
     #    Student Generation Interface
     # ==========================
     backend = generation_config["backend"]
-    generation_config["model_name"] = policy_config["model_name"]  # Needed for vLLM
+    rollout_from_teacher = distillation_config.rollout_policy == "teacher"
+    if rollout_from_teacher:
+        assert backend == "vllm" and not real_quant, (
+            "distillation.rollout_policy=teacher samples from the BF16 teacher in vLLM; "
+            "set policy.generation.real_quant=false"
+        )
+    # Needed for vLLM
+    generation_config["model_name"] = (
+        teacher_config["model_name"]
+        if rollout_from_teacher
+        else policy_config["model_name"]
+    )
     student_policy = None
 
     if backend == "vllm":
@@ -642,7 +657,7 @@ def setup(
             )
             student_generation.finish_generation()
         print(
-            f"  ✓ Using vLLM backend for generation with {policy_config['model_name']}",
+            f"  ✓ Using vLLM backend for generation with {generation_config['model_name']}",
             flush=True,
         )
 
@@ -713,6 +728,19 @@ def setup(
 # ===============================================================================
 
 
+def _prepare_generation_without_refit(
+    student_policy: ColocatablePolicyInterface,
+    student_generation: GenerationInterface,
+    offload_student: bool,
+) -> None:
+    """Wake the generation engine with the weights it already holds."""
+    if offload_student:
+        # A refit would move the student off the GPUs first; without one, do it here.
+        student_policy.offload_before_refit()
+        student_policy.offload_after_refit()
+    student_generation.prepare_for_generation()
+
+
 def _distillation_train_impl(
     student_policy: ColocatablePolicyInterface,
     teacher_policy: ColocatablePolicyInterface,
@@ -742,6 +770,10 @@ def _distillation_train_impl(
     # If student_generation is None, use the student_policy as the generation interface (megatron framework backend)
     if student_generation is None:
         student_generation = student_policy  # type: ignore
+        NEED_REFIT = False
+    # Teacher rollouts: the engine keeps the teacher weights it was loaded with.
+    rollout_from_teacher = master_config.distillation.rollout_policy == "teacher"
+    if rollout_from_teacher:
         NEED_REFIT = False
     POLICY_GENERATION_STALE = True  # tracks if generation needs a refit before running
     assert student_generation is not None  # for mypy type check
@@ -783,7 +815,11 @@ def _distillation_train_impl(
             )
             POLICY_GENERATION_STALE = False
         else:
-            student_generation.prepare_for_generation()
+            _prepare_generation_without_refit(
+                student_policy,
+                student_generation,
+                rollout_from_teacher and colocated_inference,
+            )
         val_metrics, validation_timings = validate(
             student_generation,
             val_dataloader,
@@ -861,7 +897,11 @@ def _distillation_train_impl(
                         )
                         POLICY_GENERATION_STALE = False
                     else:
-                        student_generation.prepare_for_generation()
+                        _prepare_generation_without_refit(
+                            student_policy,
+                            student_generation,
+                            rollout_from_teacher and colocated_inference,
+                        )
 
                 with (
                     timer.time("generation"),
@@ -1044,7 +1084,11 @@ def _distillation_train_impl(
                         )
                         POLICY_GENERATION_STALE = False
                     else:
-                        student_generation.prepare_for_generation()
+                        _prepare_generation_without_refit(
+                            student_policy,
+                            student_generation,
+                            rollout_from_teacher and colocated_inference,
+                        )
                     val_metrics, validation_timings = validate(
                         student_generation,
                         val_dataloader,
