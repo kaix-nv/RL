@@ -563,6 +563,9 @@ policy:
       fp32_lm_head: ${policy.megatron_cfg.fp32_lm_head} # Compute Nemotron-H logits with an fp32 LM head.
       # false: use NeMo-RL's legacy refit loader; true: opt into vLLM reload_weights.
       refit_with_reload_api: false
+      # Colocated generation only. 1: vLLM copies its weights to host memory while asleep. 2: it discards them
+      # (about the model size less host memory per engine); distillation then refits before every generation.
+      sleep_level: 1
       tensor_parallel_size: 1
       pipeline_parallel_size: 1
       expert_parallel_size: 1  # When EP > 1, EP must be a multiple of TP since vLLM's EP = DP * TP

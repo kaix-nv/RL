@@ -49,6 +49,7 @@ from nemo_rl.models.generation.vllm.config import (
     resolve_vllm_video_config,
     validate_nvfp4_pertoken_model,
     vllm_nemotron_h_fp32_lm_head_enabled,
+    vllm_sleep_level,
 )
 from nemo_rl.models.generation.vllm.patches import _apply_vllm_patches
 from nemo_rl.models.generation.vllm.utils import (
@@ -1593,7 +1594,7 @@ class VllmGenerationWorkerImpl(VllmCheckpointEngineRpcMixin, BaseVllmGenerationW
             self.llm.renderer, "clear_mm_cache"
         ):
             self.llm.renderer.clear_mm_cache()
-        self.llm.sleep(level=1)
+        self.llm.sleep(level=vllm_sleep_level(self.cfg["vllm_cfg"]))
 
         gc.collect()
         torch.cuda.empty_cache()

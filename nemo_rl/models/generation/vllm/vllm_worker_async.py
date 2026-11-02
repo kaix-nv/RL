@@ -63,7 +63,10 @@ from nemo_rl.models.generation.vllm.checkpoint_engine import (
 from nemo_rl.models.generation.vllm.collective_rpc import (
     resolve_collective_rpc_result,
 )
-from nemo_rl.models.generation.vllm.config import parse_nvfp4_pertoken_rollout
+from nemo_rl.models.generation.vllm.config import (
+    parse_nvfp4_pertoken_rollout,
+    vllm_sleep_level,
+)
 from nemo_rl.models.generation.vllm.utils import (
     attach_routed_experts_to_chat_response_choices,
     attach_token_information_to_chat_response_choices,
@@ -2481,7 +2484,7 @@ class VllmAsyncGenerationWorkerImpl(
         # the receiver and sends data=None, causing an assertion error.
         if hasattr(self.llm, "reset_mm_cache"):
             await self.llm.reset_mm_cache()
-        await self.llm.sleep(level=1)
+        await self.llm.sleep(level=vllm_sleep_level(self.cfg["vllm_cfg"]))
 
         gc.collect()
         torch.cuda.empty_cache()

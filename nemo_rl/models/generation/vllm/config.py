@@ -137,6 +137,11 @@ class VllmSpecificArgs(TypedDict):
     # False so existing IPC/NCCL refit behavior keeps using NeMo-RL's legacy
     # loader path.
     refit_with_reload_api: NotRequired[bool]
+    # vLLM sleep level for colocated generation. 1 (the default) copies the weights to host memory
+    # while asleep (about the model size per engine); 2 discards them, so every wake-up must be
+    # followed by a full weight refit. distillation.py refits before each generation when it is 2
+    # and rejects rollout_policy=teacher, whose engine is never refit.
+    sleep_level: NotRequired[int]
     # A filepath that can be imported to register a vLLM reasoning parser
     reasoning_parser_plugin: NotRequired[str]
 
@@ -146,6 +151,14 @@ def vllm_nemotron_h_fp32_lm_head_enabled(
 ) -> bool:
     """Return whether vLLM should run Nemotron-H logits with an fp32 head."""
     return bool(vllm_cfg.get("fp32_lm_head"))
+
+
+def vllm_sleep_level(vllm_cfg: VllmSpecificArgs | dict[str, Any]) -> int:
+    """Return the vLLM sleep level: 2 when ``sleep_level`` is 2, otherwise 1."""
+    level = vllm_cfg.get("sleep_level")
+    if level not in (None, 1, 2):
+        raise ValueError(f"vllm_cfg.sleep_level must be 1 or 2, got {level!r}")
+    return 2 if level == 2 else 1
 
 
 class VllmDeltaCompressionConfig(BaseModel, extra="allow"):

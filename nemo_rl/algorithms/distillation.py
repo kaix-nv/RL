@@ -69,6 +69,7 @@ from nemo_rl.models.generation.vllm.config import (
     VLLM_SPARSE_REFIT_TRANSPORTS,
     normalize_nvfp4_pertoken_policy_config,
     normalize_vllm_refit_config,
+    vllm_sleep_level,
 )
 from nemo_rl.models.policy import PolicyConfig
 from nemo_rl.models.policy.interfaces import ColocatablePolicyInterface
@@ -775,6 +776,16 @@ def _distillation_train_impl(
     rollout_from_teacher = master_config.distillation.rollout_policy == "teacher"
     if rollout_from_teacher:
         NEED_REFIT = False
+    # vLLM sleep level 2 discards the weights, so each wake-up needs a refit, even when the policy has not
+    # trained since the last generation (validation); an engine that is never refit cannot use it.
+    SLEEP_DISCARDS_WEIGHTS = (
+        student_generation is not student_policy
+        and vllm_sleep_level(master_config.policy["generation"]["vllm_cfg"]) == 2
+    )
+    assert not (SLEEP_DISCARDS_WEIGHTS and not NEED_REFIT), (
+        "policy.generation.vllm_cfg.sleep_level=2 needs a refit after every sleep; "
+        "it cannot be used with distillation.rollout_policy=teacher"
+    )
     POLICY_GENERATION_STALE = True  # tracks if generation needs a refit before running
     assert student_generation is not None  # for mypy type check
     use_nemo_gym = should_use_nemo_gym(master_config)
@@ -806,7 +817,7 @@ def _distillation_train_impl(
     # Run validation at the start if configured
     if val_at_start and total_steps == 0:
         print("\n🔍 Running initial validation...", flush=True)
-        if NEED_REFIT and POLICY_GENERATION_STALE:
+        if NEED_REFIT and (POLICY_GENERATION_STALE or SLEEP_DISCARDS_WEIGHTS):
             refit_policy_generation(
                 student_policy,
                 student_generation,
@@ -887,7 +898,7 @@ def _distillation_train_impl(
                     flush=True,
                 )
                 with timer.time("prepare_for_generation"):
-                    if NEED_REFIT and POLICY_GENERATION_STALE:
+                    if NEED_REFIT and (POLICY_GENERATION_STALE or SLEEP_DISCARDS_WEIGHTS):
                         refit_policy_generation(
                             student_policy,
                             student_generation,
@@ -1075,7 +1086,7 @@ def _distillation_train_impl(
                 if (val_period > 0 and (total_steps + 1) % val_period == 0) or (
                     val_at_end and is_last_step
                 ):
-                    if NEED_REFIT and POLICY_GENERATION_STALE:
+                    if NEED_REFIT and (POLICY_GENERATION_STALE or SLEEP_DISCARDS_WEIGHTS):
                         refit_policy_generation(
                             student_policy,
                             student_generation,
