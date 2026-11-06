@@ -331,6 +331,7 @@ from nemo_rl.models.megatron.hybridep import (
     configure_hybridep_packed_input_padding,
 )
 from nemo_rl.models.megatron.memory_saver import inference_model_alloc_region
+from nemo_rl.models.megatron.modelopt_hf_dequant import install_for_qwen35_moe
 from nemo_rl.models.megatron.router_replay import (
     clear_global_router_replay_instances,
     router_replay_enabled,
@@ -3192,6 +3193,7 @@ def finalize_megatron_setup(
     )
 
     dp_size = worker_sharding_annotations.get_axis_size("data_parallel")
+    install_for_qwen35_moe()
     megatron_bridge = AutoBridge.from_hf_pretrained(
         hf_model_name, trust_remote_code=True
     )

@@ -24,6 +24,7 @@ import torch
 from megatron.bridge import AutoBridge
 from megatron.core.transformer import ModuleSpec
 
+from nemo_rl.models.megatron.modelopt_hf_dequant import install_for_qwen35_moe
 from nemo_rl.models.policy import MegatronConfig
 
 
@@ -185,6 +186,7 @@ def import_model_from_hf_name(
         **config_overrides: Extra keyword arguments forwarded to
             ``AutoBridge.from_hf_pretrained``.
     """
+    install_for_qwen35_moe()
     bridge = AutoBridge.from_hf_pretrained(
         hf_model_name, trust_remote_code=True, **config_overrides
     )
