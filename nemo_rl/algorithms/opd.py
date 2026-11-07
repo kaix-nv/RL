@@ -250,6 +250,21 @@ def is_non_colocated_teachers_enabled(master_config: Any) -> bool:
     )
 
 
+def teachers_can_init_early(master_config: Any) -> bool:
+    """True when every configured teacher is a vLLM teacher.
+
+    A vLLM teacher touches neither Megatron-Bridge's HF->mcore conversion cache nor the policy's GPUs, so its
+    (slow, ~25 min for the 2.4T NVFP4 checkpoint) weight load can overlap policy / generation / Gym startup. A Megatron
+    teacher shares the conversion cache key with a student of the same checkpoint and must wait for the policy.
+    """
+    from nemo_rl.models.policy.teacher_worker_group import (
+        create_teacher_configs_from_opd_config,
+    )
+
+    configs = create_teacher_configs_from_opd_config(_opd_cfg(master_config))
+    return bool(configs) and all(cfg.backend == "vllm" for cfg in configs)
+
+
 def validate_teacher_backend_configs(
     master_config: Any, *, single_controller: bool = False
 ) -> list["TeacherConfig"]:

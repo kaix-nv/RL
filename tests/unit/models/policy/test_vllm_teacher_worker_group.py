@@ -274,3 +274,25 @@ def test_cross_node_teacher_reserves_unified_placement_before_loading(monkeypatc
         strategy="PACK", use_unified_pg=True
     )
     cluster.get_placement_groups.assert_not_called()
+
+
+def test_teachers_can_init_early_only_for_vllm_teachers():
+    from nemo_rl.algorithms import opd
+
+    vllm_master = master_config()
+    assert opd.teachers_can_init_early(vllm_master)
+
+    # A Megatron teacher shares Megatron-Bridge's conversion cache with the policy and must wait for it.
+    megatron_master = master_config()
+    default = megatron_master["on_policy_distillation"]["non_colocated_teachers"]["default_teacher_cfg"]
+    default["backend"] = "megatron"
+    default.pop("vllm_cfg", None)
+    assert not opd.teachers_can_init_early(megatron_master)
+
+    # Mixed: one vLLM and one Megatron teacher -> not early.
+    mixed = master_config()
+    mixed["on_policy_distillation"]["teacher_model_by_agent_name"]["other"] = "other-model"
+    mixed["on_policy_distillation"]["non_colocated_teachers"]["teacher_overrides"] = {
+        "other": {"backend": "megatron", "vllm_cfg": None}
+    }
+    assert not opd.teachers_can_init_early(mixed)

@@ -1378,6 +1378,26 @@ def setup(
         )
         teacher_reservation_time = time.perf_counter() - t0
 
+    # vLLM teachers load their weights while the policy, generation and Gym start: that load (about 25 min for the
+    # 2.4T NVFP4 checkpoint) is the longest startup phase, and the cluster's idle-job reaper cancels a job whose GPUs
+    # sit idle for 30 min. Megatron teachers still start after the policy is ready (see the end of setup).
+    teacher_init_executor: ThreadPoolExecutor | None = None
+    teacher_init_future: Future | None = None
+    teacher_init_t0 = 0.0
+    if enable_opd_teachers and opd_module.teachers_can_init_early(master_config):
+        teacher_init_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="vllm_teacher_init"
+        )
+        teacher_init_t0 = time.perf_counter()
+        teacher_init_future = teacher_init_executor.submit(
+            opd_module.create_teacher_worker_groups,
+            master_config,
+            policy_config,
+            tokenizer,
+            teacher_clusters=teacher_clusters,
+        )
+        print("  ⚡ vLLM teacher init started in the background", flush=True)
+
     # ==========================
     #   Training and Inference
     # ==========================
@@ -2091,22 +2111,33 @@ def setup(
             else:
                 policy.prepare_refit_info()
 
-    # Spin up non-colocated OPD teacher worker groups AFTER policy / vLLM are
+    # Spin up non-colocated Megatron OPD teacher worker groups AFTER policy / vLLM are
     # ready. Parallelizing with policy init races on Megatron-Bridge's HF->mcore
     # cache (shared key when student == teacher) — both workers write to the
     # same iter_0000000/ path and the second reader gets a truncated file.
+    # vLLM teachers have no such cache and were started above; this joins them.
     teacher_worker_groups: dict[str, Any] = {}
     alias_to_group_alias: dict[str, str] = {}
     if enable_opd_teachers:
         t0 = time.perf_counter()
-        teacher_worker_groups, alias_to_group_alias = (
-            opd_module.create_teacher_worker_groups(
-                master_config,
-                policy_config,
-                tokenizer,
-                teacher_clusters=teacher_clusters,
+        if teacher_init_future is not None:
+            t0 = teacher_init_t0
+            try:
+                teacher_worker_groups, alias_to_group_alias = (
+                    teacher_init_future.result()
+                )
+            finally:
+                assert teacher_init_executor is not None
+                teacher_init_executor.shutdown(wait=False)
+        else:
+            teacher_worker_groups, alias_to_group_alias = (
+                opd_module.create_teacher_worker_groups(
+                    master_config,
+                    policy_config,
+                    tokenizer,
+                    teacher_clusters=teacher_clusters,
+                )
             )
-        )
         teacher_model_init_time = time.perf_counter() - t0
         setup_timing_metrics.teacher_model_init_time_s = teacher_model_init_time
         # Preserve the existing metric's end-to-end meaning while exposing the
