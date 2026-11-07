@@ -34,6 +34,7 @@ Rollouts need nothing special: weights are quantized, activations are not, so th
 
 from __future__ import annotations
 
+import glob
 import json
 import os
 import weakref
@@ -336,6 +337,25 @@ def _segment(
     return _Segment(name, _as_slice(local_rows), cols, u, v, block, meta["type"] if reencode else None, d, imp)
 
 
+def _hf_shapes(model_dir: str, names: list[str]) -> dict[str, tuple[int, ...]]:
+    """Shapes of HF tensors, read from the safetensors headers of the (BF16) HF checkpoint directory."""
+    index_path = os.path.join(model_dir, "model.safetensors.index.json")
+    if os.path.exists(index_path):
+        weight_map = json.load(open(index_path))["weight_map"]
+    else:
+        weight_map = {}
+        for fn in sorted(glob.glob(os.path.join(model_dir, "*.safetensors"))):
+            with safe_open(fn, framework="pt") as f:
+                weight_map.update({k: os.path.basename(fn) for k in f.keys()})
+    shapes = {}
+    for n in names:
+        if n not in weight_map:
+            raise RuntimeError(f"{n}: not in the HF checkpoint at {model_dir}; cannot size an unquantized GGUF component")
+        with safe_open(os.path.join(model_dir, weight_map[n]), framework="pt") as f:
+            shapes[n] = tuple(f.get_slice(n).get_shape())
+    return shapes
+
+
 def attach_gguf_frozen(worker, frozen_dir: str, imatrix: str | None = None) -> dict:
     """Give every enabled GGUF weight quantizer of the worker's model its frozen codes or scales.
 
@@ -351,6 +371,7 @@ def attach_gguf_frozen(worker, frozen_dir: str, imatrix: str | None = None) -> d
 
     index = json.load(open(os.path.join(frozen_dir, "index.json")))
     quantized = index["quantized"]
+    unquantized = index.get("unquantized", {})
     second_moments = None
     if imatrix is not None:
         with safe_open(imatrix, framework="pt") as f:
@@ -372,15 +393,20 @@ def attach_gguf_frozen(worker, frozen_dir: str, imatrix: str | None = None) -> d
             disabled.append(task.global_param_name)
             continue
         missing = [n for n in names if n not in quantized]
-        if missing:
-            raise RuntimeError(f"{task.global_param_name}: GGUF does not quantize {missing}")
-        shapes = {n: tuple(quantized[n]["shape"]) for n in names}
+        # A fused Megatron weight can mix quantized and unquantized components: the GSQ-RCO IQ2_XS file keeps
+        # the GDN in_proj_a / in_proj_b at full precision where the UD files store them as Q8_0. Their rows
+        # pass through the quantizer unchanged; a tensor the GGUF does not hold at all is still an error.
+        unknown = [n for n in missing if n not in unquantized]
+        if unknown:
+            raise RuntimeError(f"{task.global_param_name}: GGUF has no tensor for {unknown}")
+        hf_shapes = _hf_shapes(worker.cfg["model_name"], missing) if missing else {}
+        shapes = {n: tuple(quantized[n]["shape"]) if n in quantized else hf_shapes[n] for n in names}
         src, hrow, hcol = probe_layout(task, shapes)
         src, hrow, hcol = src.cpu(), hrow.cpu(), hcol.cpu()
         segments = []
         for i, n in enumerate(names):
             local = torch.nonzero(src == i).flatten()
-            if local.numel():
+            if local.numel() and n in quantized:
                 reencode = backend == CODES_BACKEND and quantized[n]["type"] in CODE_TYPES
                 e2 = None
                 if reencode and second_moments is not None:
