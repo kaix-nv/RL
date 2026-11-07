@@ -149,7 +149,10 @@ def encode(
 
     ``importance`` [n, 256] weights each value's squared error in the search."""
     grid = _GRIDS[qtype](blocks.device)
-    d = d.to(device=blocks.device, dtype=torch.float16).contiguous()
+    # The packers need finite non-negative scales. A file can store a negative d (GSQ-RCO IQ2_XS: 43 of 69M
+    # re-encodable blocks), which only flips its codes' signs: search the codes at |d| and store |d| in the block,
+    # so training and export treat those blocks alike.
+    d = d.to(device=blocks.device, dtype=torch.float16).abs().contiguous()
     blocks = blocks.float().contiguous()
     if importance is not None:
         importance = importance.to(device=blocks.device, dtype=torch.float32).contiguous()
