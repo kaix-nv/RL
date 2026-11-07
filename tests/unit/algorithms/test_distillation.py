@@ -1751,3 +1751,44 @@ def test_noncolocated_inference_requires_explicit_gpus_per_node_multi_node():
         # Configure mocks to skip checkpoint loading
         mock_checkpointer.return_value.get_latest_checkpoint_path.return_value = None
         setup(master_config, tokenizer, dataset, None)
+
+
+def _special_token_tokenizers(monkeypatch, student_specials, teacher_specials, teacher_eos=1):
+    """Tokenizers with the same vocab but different declared special-token ids."""
+
+    def make(specials, eos):
+        tok = MagicMock()
+        tok.get_vocab.return_value = {"a": 0, "b": 1, "c": 2, "d": 3}
+        tok.__len__.return_value = 4
+        tok.bos_token_id = None
+        tok.eos_token_id = eos
+        tok.pad_token_id = 3
+        tok.all_special_ids = specials
+        return tok
+
+    config = MagicMock()
+    config.vocab_size = 4
+    config.get_text_config.return_value = config
+    student, teacher = make(student_specials, 1), make(teacher_specials, teacher_eos)
+    monkeypatch.setattr(hf_common.AutoTokenizer, "from_pretrained", lambda name: teacher)
+    monkeypatch.setattr(hf_common.AutoConfig, "from_pretrained", lambda name: config)
+    return student
+
+
+def test_check_vocab_equality_special_token_sets(monkeypatch):
+    # The student config declares ids 0 and 1 special, the teacher config only id 1 (same vocab).
+    student = _special_token_tokenizers(monkeypatch, [0, 1, 3], [1, 3])
+    with pytest.raises(ValueError, match="special-token ID sets differ"):
+        check_vocab_equality(student, "student-model", "teacher-model", check_special_tokens=True)
+    # A teacher that scores token ids only does not need the registries to agree.
+    check_vocab_equality(
+        student, "student-model", "teacher-model", check_special_tokens=True, check_special_token_sets=False
+    )
+
+
+def test_check_vocab_equality_eos_mismatch_still_raises_without_set_check(monkeypatch):
+    student = _special_token_tokenizers(monkeypatch, [1, 3], [1, 3], teacher_eos=2)
+    with pytest.raises(ValueError, match="eos_token_id"):
+        check_vocab_equality(
+            student, "student-model", "teacher-model", check_special_tokens=True, check_special_token_sets=False
+        )

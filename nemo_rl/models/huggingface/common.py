@@ -26,8 +26,15 @@ def check_vocab_equality(
     teacher_model_name: str,
     *,
     check_special_tokens: bool = False,
+    check_special_token_sets: bool = True,
 ) -> None:
-    """Check if the vocab of the tokenizer (student) and the teacher tokenizer are equal."""
+    """Check if the vocab of the tokenizer (student) and the teacher tokenizer are equal.
+
+    ``check_special_tokens`` also requires equal bos/eos ids and, unless ``check_special_token_sets`` is False, equal sets
+    of declared special-token ids (ignoring padding). The sets describe each tokenizer's registry, not what an id means:
+    with the token->id mapping already equal, two tokenizers can declare different tokens special (the Qwen3.8 27B config
+    registers <|im_start|> and the vision tokens, the 2.4T config does not) while every id still has the same meaning.
+    A teacher that scores token ids and never uses its own tokenizer for text (the vLLM teacher) can pass False."""
     teacher_tokenizer = AutoTokenizer.from_pretrained(teacher_model_name)
 
     skip_hint = "Set NRL_SKIP_DISTILLATION_TOKENIZER_CHECK=true to skip this check."
@@ -59,7 +66,7 @@ def check_vocab_equality(
                     f"Teacher/student semantic special-token mismatch: {name}"
                 )
         padding_ids = {tokenizer.pad_token_id, teacher_tokenizer.pad_token_id}
-        if (set(tokenizer.all_special_ids) - padding_ids) != (
+        if check_special_token_sets and (set(tokenizer.all_special_ids) - padding_ids) != (
             set(teacher_tokenizer.all_special_ids) - padding_ids
         ):
             raise ValueError("Teacher/student special-token ID sets differ")

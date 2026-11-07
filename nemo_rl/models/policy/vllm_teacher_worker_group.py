@@ -99,6 +99,9 @@ class VllmTeacherWorkerGroup:
             policy_config["model_name"],
             self.model_name,
             check_special_tokens=True,
+            # Token ids go to vLLM as they are; the teacher's own tokenizer is never used for text, so only the
+            # token->id mapping and bos/eos must agree, not which ids each config declares special.
+            check_special_token_sets=False,
         )
         cfg = build_vllm_teacher_runtime_config(teacher_cfg)
         cfg["_pad_token_id"] = tokenizer.pad_token_id
