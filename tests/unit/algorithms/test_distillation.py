@@ -611,6 +611,8 @@ def test_teacher_rollouts_skip_refit_and_offload_colocated_student(mock_componen
     master_config.distillation.max_num_steps = 2
     master_config.distillation.rollout_policy = "teacher"
     master_config.policy["generation"]["colocated"]["enabled"] = True
+    # The loop reads the vLLM sleep level from the generation config.
+    master_config.policy["generation"].setdefault("vllm_cfg", {})
     student_policy = mock_components["student_policy"]
     student_generation = MagicMock()
     student_generation.generate.return_value = student_policy.generate.return_value
