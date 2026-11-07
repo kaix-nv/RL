@@ -1726,15 +1726,31 @@ class AsyncTrajectoryCollector:
                         make_sequence_length_divisible_by=self._teacher_seq_pad_multiple,
                     )
                 )
-                teacher_logprobs, teacher_logprob_time = await asyncio.to_thread(
-                    self._compute_teacher_logprobs,
-                    flat_for_teacher["token_ids"],
-                    agent_refs,
-                    input_lengths=teacher_input_lengths,
-                    multimodal_data=flat_for_teacher.get_multimodal_dict(
-                        as_tensors=False
-                    ),
+                teacher_task = asyncio.create_task(
+                    asyncio.to_thread(
+                        self._compute_teacher_logprobs,
+                        flat_for_teacher["token_ids"],
+                        agent_refs,
+                        input_lengths=teacher_input_lengths,
+                        multimodal_data=flat_for_teacher.get_multimodal_dict(
+                            as_tensors=False
+                        ),
+                    )
                 )
+                try:
+                    teacher_logprobs, teacher_logprob_time = await asyncio.shield(
+                        teacher_task
+                    )
+                except asyncio.CancelledError:
+                    # A cancelled await cannot stop the thread or its Ray RPCs.
+                    # Drain before returning so no scoring survives collection.
+                    try:
+                        await teacher_task
+                    except BaseException as drain_error:
+                        raise asyncio.CancelledError(
+                            "Cancelled while draining teacher scoring"
+                        ) from drain_error
+                    raise
                 # Keep the tensor inside the batch so replay-buffer collation can
                 # pad variable-length prompt groups correctly.
                 final_batch_cpu["teacher_reference_logprobs"] = teacher_logprobs

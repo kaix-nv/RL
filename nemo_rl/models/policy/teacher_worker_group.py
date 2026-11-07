@@ -23,13 +23,17 @@ from __future__ import annotations
 import warnings
 from copy import deepcopy
 from dataclasses import dataclass, replace
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 import numpy as np
 import ray
 from transformers import PreTrainedTokenizerBase
 
-from nemo_rl.algorithms.opd import TeacherResourceConfig
+from nemo_rl.algorithms.opd import (
+    TeacherResourceConfig,
+    VllmTeacherConfig,
+    merge_teacher_resource_settings,
+)
 from nemo_rl.data_plane import DataPlaneConfig, KVBatchMeta
 from nemo_rl.data_plane.column_io import round_up
 from nemo_rl.data_plane.preshard import shard_meta_for_dp
@@ -61,6 +65,8 @@ class TeacherConfig:
     precision: str
     micro_batch_size: int
     megatron_cfg_overrides: dict[str, Any]
+    backend: Literal["megatron", "vllm"] = "megatron"
+    vllm_cfg: Optional[VllmTeacherConfig] = None
 
 
 def create_teacher_configs_from_opd_config(
@@ -80,16 +86,21 @@ def create_teacher_configs_from_opd_config(
     deduplicate = bool(opd_cfg.get("deduplicate_shared_teacher_checkpoints", True))
 
     configs: list[TeacherConfig] = []
-    seen_models: set[str] = set()
+    seen_models: dict[str, TeacherResourceConfig] = {}
 
     for alias, model_name in teacher_model_by_agent_name.items():
-        if deduplicate and model_name in seen_models:
-            continue
-        seen_models.add(model_name)
-
         # defaults <- per-alias override, then validated/typed by the schema.
-        merged = {**default_cfg, **dict(overrides.get(alias, {}))}
+        merged = merge_teacher_resource_settings(
+            default_cfg, dict(overrides.get(alias, {}))
+        )
         res = TeacherResourceConfig(**merged)
+        if deduplicate and model_name in seen_models:
+            if res != seen_models[model_name]:
+                raise ValueError(
+                    f"Teacher aliases sharing {model_name!r} have conflicting settings"
+                )
+            continue
+        seen_models[model_name] = res
 
         # Unknown top-level keys (extra="allow") fold into megatron_cfg_overrides;
         # explicit megatron_cfg_overrides take precedence.
@@ -108,6 +119,8 @@ def create_teacher_configs_from_opd_config(
                 precision=res.precision,
                 micro_batch_size=res.micro_batch_size,
                 megatron_cfg_overrides=all_overrides,
+                backend=res.backend,
+                vllm_cfg=res.vllm_cfg,
             )
         )
 

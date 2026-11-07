@@ -1404,3 +1404,60 @@ def test_tq_teacher_enrichment_does_not_advertise_a_payload_when_full_is_disable
         "on_policy_distillation/teacher_full_payload_tokens"
         not in coordinator.drain_metrics()
     )
+
+
+def test_legacy_collector_drains_teacher_before_cancelling(monkeypatch):
+    import asyncio
+    import threading
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from nemo_rl.data import llm_message_utils
+
+    async def run():
+        started = threading.Event()
+        release = threading.Event()
+        finished = threading.Event()
+
+        def scoring(*args, **kwargs):
+            started.set()
+            assert release.wait(timeout=5)
+            finished.set()
+            return torch.tensor([[0.0, -1.0]]), 0.1
+
+        collector = _make_collector(_has_distillation_teachers=True)
+        collector.tokenizer = SimpleNamespace(pad_token_id=0)
+        collector._teacher_seq_pad_multiple = 1
+        collector._compute_teacher_logprobs = scoring
+        collector.replay_buffer = AsyncMock()
+        monkeypatch.setattr(
+            llm_message_utils,
+            "batched_message_log_to_flat_message",
+            lambda *a, **k: (
+                BatchedDataDict(token_ids=torch.tensor([[1, 2]])),
+                torch.tensor([2]),
+            ),
+        )
+        batch = BatchedDataDict(agent_ref=[{"name": "teacher"}], message_log=[[]])
+        result = SimpleNamespace(final_batch=batch, rollout_metrics={})
+        task = asyncio.create_task(
+            collector._enqueue_rollout_group(
+                result,
+                0,
+                0,
+                1,
+                set(),
+                0.0,
+            )
+        )
+        assert await asyncio.to_thread(started.wait, 5)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert finished.is_set()
+        assert "teacher_reference_logprobs" not in batch
+        assert collector.replay_buffer.mock_calls == []
+
+    asyncio.run(run())

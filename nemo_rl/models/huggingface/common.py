@@ -17,7 +17,52 @@ from enum import Enum, auto
 from typing import Optional, Tuple
 
 import torch
-from transformers import AutoConfig
+from transformers import AutoConfig, AutoTokenizer, PreTrainedTokenizerBase
+
+
+def check_vocab_equality(
+    tokenizer: PreTrainedTokenizerBase,
+    student_model_name: str,
+    teacher_model_name: str,
+    *,
+    check_special_tokens: bool = False,
+) -> None:
+    """Check if the vocab of the tokenizer (student) and the teacher tokenizer are equal."""
+    teacher_tokenizer = AutoTokenizer.from_pretrained(teacher_model_name)
+
+    skip_hint = "Set NRL_SKIP_DISTILLATION_TOKENIZER_CHECK=true to skip this check."
+
+    # 1) Exact token->id mapping equality
+    vocab_a = tokenizer.get_vocab()
+    vocab_b = teacher_tokenizer.get_vocab()
+    assert vocab_a == vocab_b, (
+        f"Token->ID mapping differs between student and teacher. {skip_hint}"
+    )
+
+    # 2) Size consistency (sanity checks)
+    assert len(tokenizer) == len(teacher_tokenizer), (
+        f"Effective vocab sizes differ between student and teacher. {skip_hint}"
+    )
+
+    # 3) Check model.config.vocab_size to guarantee the last dimension of the logits is the same.
+    # Vision-language configs (e.g. Qwen3.5/3.8) keep vocab_size on their text config.
+    student_config = AutoConfig.from_pretrained(student_model_name).get_text_config()
+    teacher_config = AutoConfig.from_pretrained(teacher_model_name).get_text_config()
+    assert student_config.vocab_size == teacher_config.vocab_size, (
+        f"Model config vocab sizes differ between student and teacher. {skip_hint}"
+    )
+
+    if check_special_tokens:
+        for name in ("bos_token_id", "eos_token_id"):
+            if getattr(tokenizer, name) != getattr(teacher_tokenizer, name):
+                raise ValueError(
+                    f"Teacher/student semantic special-token mismatch: {name}"
+                )
+        padding_ids = {tokenizer.pad_token_id, teacher_tokenizer.pad_token_id}
+        if (set(tokenizer.all_special_ids) - padding_ids) != (
+            set(teacher_tokenizer.all_special_ids) - padding_ids
+        ):
+            raise ValueError("Teacher/student special-token ID sets differ")
 
 
 @dataclass

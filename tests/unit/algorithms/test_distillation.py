@@ -21,6 +21,7 @@ import torch
 from torchdata.stateful_dataloader import StatefulDataLoader
 
 import nemo_rl.algorithms.distillation as distil_mod
+from nemo_rl.models.huggingface import common as hf_common
 from nemo_rl.algorithms.distillation import (
     DistillationConfig,
     MasterConfig,
@@ -869,16 +870,18 @@ def test_check_vocab_equality_pass(monkeypatch):
 
     student_config = MagicMock()
     student_config.vocab_size = 2
+    student_config.get_text_config.return_value = student_config
     teacher_config = MagicMock()
     teacher_config.vocab_size = 2
+    teacher_config.get_text_config.return_value = teacher_config
 
     monkeypatch.setattr(
-        distil_mod.AutoTokenizer,
+        hf_common.AutoTokenizer,
         "from_pretrained",
         lambda name: teacher_tokenizer,
     )
     monkeypatch.setattr(
-        distil_mod.AutoConfig,
+        hf_common.AutoConfig,
         "from_pretrained",
         lambda name: student_config if name == "student-model" else teacher_config,
     )
@@ -898,16 +901,18 @@ def test_check_vocab_equality_vocab_mismatch_raises(monkeypatch):
 
     student_config = MagicMock()
     student_config.vocab_size = 2
+    student_config.get_text_config.return_value = student_config
     teacher_config = MagicMock()
     teacher_config.vocab_size = 2
+    teacher_config.get_text_config.return_value = teacher_config
 
     monkeypatch.setattr(
-        distil_mod.AutoTokenizer,
+        hf_common.AutoTokenizer,
         "from_pretrained",
         lambda name: teacher_tokenizer,
     )
     monkeypatch.setattr(
-        distil_mod.AutoConfig,
+        hf_common.AutoConfig,
         "from_pretrained",
         lambda name: student_config if name == "student-model" else teacher_config,
     )
@@ -929,16 +934,18 @@ def test_check_vocab_equality_length_mismatch_raises(monkeypatch):
 
     student_config = MagicMock()
     student_config.vocab_size = 2
+    student_config.get_text_config.return_value = student_config
     teacher_config = MagicMock()
     teacher_config.vocab_size = 2
+    teacher_config.get_text_config.return_value = teacher_config
 
     monkeypatch.setattr(
-        distil_mod.AutoTokenizer,
+        hf_common.AutoTokenizer,
         "from_pretrained",
         lambda name: teacher_tokenizer,
     )
     monkeypatch.setattr(
-        distil_mod.AutoConfig,
+        hf_common.AutoConfig,
         "from_pretrained",
         lambda name: student_config if name == "student-model" else teacher_config,
     )
@@ -959,16 +966,18 @@ def test_check_vocab_equality_config_vocab_size_mismatch_raises(monkeypatch):
 
     student_config = MagicMock()
     student_config.vocab_size = 2
+    student_config.get_text_config.return_value = student_config
     teacher_config = MagicMock()
     teacher_config.vocab_size = 3
+    teacher_config.get_text_config.return_value = teacher_config
 
     monkeypatch.setattr(
-        distil_mod.AutoTokenizer,
+        hf_common.AutoTokenizer,
         "from_pretrained",
         lambda name: teacher_tokenizer,
     )
     monkeypatch.setattr(
-        distil_mod.AutoConfig,
+        hf_common.AutoConfig,
         "from_pretrained",
         lambda name: student_config if name == "student-model" else teacher_config,
     )

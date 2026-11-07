@@ -1073,12 +1073,7 @@ def setup(
         assert should_use_async_rollouts(generation_config), (
             "Non-colocated OPD teachers require async GRPO (vLLM backend with async_engine enabled)."
         )
-        from nemo_rl.models.policy.teacher_worker_group import (
-            create_teacher_configs_from_opd_config,
-        )
-
-        opd_cfg = opd_module._opd_cfg(master_config)
-        teacher_configs = create_teacher_configs_from_opd_config(opd_cfg)
+        teacher_configs = opd_module.validate_teacher_backend_configs(master_config)
         for tcfg in teacher_configs:
             assert tcfg.gpus_per_node <= cluster_config.gpus_per_node, (
                 f"OPD teacher '{tcfg.alias}' requests gpus_per_node={tcfg.gpus_per_node} > "

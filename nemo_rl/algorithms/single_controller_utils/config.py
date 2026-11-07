@@ -1598,6 +1598,9 @@ def validate_single_controller_config(master_config: MasterConfig) -> None:
             )
         opd_module.assert_prev_logprobs_available(master_config)
         opd_module.assert_trust_region_supported(master_config)
+        opd_module.validate_teacher_backend_configs(
+            master_config, single_controller=True
+        )
         _validate_opd_full_config(master_config, opd_config)
         if (
             algo_cfg.adv_estimator.subtract_global_baseline

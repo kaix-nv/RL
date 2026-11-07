@@ -55,6 +55,15 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 
+class VllmTeacherConfig(BaseModel, extra="forbid"):
+    """Native teacher context and scheduler limits; weights load from the checkpoint."""
+
+    max_model_len: int = Field(gt=1)
+    gpu_memory_utilization: float = Field(default=0.85, gt=0.0, lt=1.0)
+    max_num_batched_tokens: int = Field(default=1024, gt=0)
+    max_num_seqs: int = Field(default=1, gt=0)
+
+
 class TeacherResourceConfig(BaseModel, extra="allow"):
     """Per-teacher resourcing for a non-colocated teacher worker group.
 
@@ -62,6 +71,8 @@ class TeacherResourceConfig(BaseModel, extra="allow"):
     any unknown top-level key is folded into ``megatron_cfg_overrides``.
     """
 
+    backend: Literal["megatron", "vllm"] = "megatron"
+    vllm_cfg: Optional[VllmTeacherConfig] = None
     tensor_model_parallel_size: int = 1
     pipeline_model_parallel_size: int = 1
     context_parallel_size: int = 1
@@ -72,6 +83,52 @@ class TeacherResourceConfig(BaseModel, extra="allow"):
     micro_batch_size: int = 4
     megatron_cfg_overrides: dict[str, Any] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def validate_backend(self) -> "TeacherResourceConfig":
+        """Reject settings that cannot be honored by the selected teacher."""
+        if self.backend == "megatron":
+            if self.vllm_cfg is not None:
+                raise ValueError("vllm_cfg requires teacher backend='vllm'")
+            return self
+        if self.vllm_cfg is None:
+            raise ValueError("A vLLM teacher requires vllm_cfg.max_model_len")
+        if self.context_parallel_size != 1 or self.expert_model_parallel_size != 1:
+            raise ValueError("vLLM teachers require CP1 and no expert parallelism")
+        if self.megatron_cfg_overrides or self.model_extra:
+            raise ValueError(
+                "vLLM teachers do not accept Megatron overrides or extra settings"
+            )
+        if self.precision not in ("bf16", "bfloat16", "fp16", "float16", "float32"):
+            raise ValueError(
+                "vLLM teacher precision specifies the unquantized runtime dtype"
+            )
+        sizes = (
+            self.tensor_model_parallel_size,
+            self.pipeline_model_parallel_size,
+            self.num_nodes,
+            self.gpus_per_node,
+            self.micro_batch_size,
+        )
+        if any(size < 1 for size in sizes):
+            raise ValueError("vLLM teacher resource sizes must be positive")
+        if (self.num_nodes * self.gpus_per_node) % (
+            self.tensor_model_parallel_size * self.pipeline_model_parallel_size
+        ):
+            raise ValueError("vLLM teacher GPUs must be divisible by TP * PP")
+        return self
+
+
+def merge_teacher_resource_settings(
+    defaults: dict[str, Any], overrides: dict[str, Any]
+) -> dict[str, Any]:
+    """Merge an alias patch before validating its backend-specific settings."""
+    merged = {**defaults, **overrides}
+    if isinstance(defaults.get("vllm_cfg"), dict) and isinstance(
+        overrides.get("vllm_cfg"), dict
+    ):
+        merged["vllm_cfg"] = {**defaults["vllm_cfg"], **overrides["vllm_cfg"]}
+    return merged
+
 
 class NonColocatedTeachersConfig(BaseModel, extra="allow"):
     """Non-colocated (separate-GPU) teacher resourcing for on-policy distillation."""
@@ -81,6 +138,22 @@ class NonColocatedTeachersConfig(BaseModel, extra="allow"):
         default_factory=TeacherResourceConfig
     )
     teacher_overrides: dict[str, TeacherResourceConfig] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def merge_alias_overrides(cls, values: Any) -> Any:
+        """A partial alias must inherit defaults before backend validation."""
+        if not isinstance(values, dict):
+            return values
+        defaults = values.get("default_teacher_cfg", {})
+        if isinstance(defaults, BaseModel):
+            defaults = defaults.model_dump()
+        overrides = {}
+        for alias, patch in values.get("teacher_overrides", {}).items():
+            if isinstance(patch, BaseModel):
+                patch = patch.model_dump(exclude_unset=True)
+            overrides[alias] = merge_teacher_resource_settings(defaults, patch)
+        return {**values, "teacher_overrides": overrides}
 
 
 class OnPolicyDistillationFullConfig(BaseModel, extra="allow"):
@@ -175,6 +248,51 @@ def is_non_colocated_teachers_enabled(master_config: Any) -> bool:
     return bool(
         _opd_cfg(master_config).get("non_colocated_teachers", {}).get("enabled", False)
     )
+
+
+def validate_teacher_backend_configs(
+    master_config: Any, *, single_controller: bool = False
+) -> list["TeacherConfig"]:
+    """Resolve teachers and reject unsupported vLLM combinations before placement."""
+    from nemo_rl.models.policy.teacher_worker_group import (
+        create_teacher_configs_from_opd_config,
+    )
+
+    configs = create_teacher_configs_from_opd_config(_opd_cfg(master_config))
+    vllm_teachers = [cfg for cfg in configs if cfg.backend == "vllm"]
+    if not vllm_teachers:
+        return configs
+    if single_controller:
+        raise ValueError(
+            "vLLM teachers currently require the legacy async GRPO entrypoint"
+        )
+    if get_opd_full_config(master_config) is not None:
+        raise ValueError(
+            "vLLM teachers support sampled-token OPD, not full-vocabulary OPD"
+        )
+    policy = (
+        master_config["policy"]
+        if isinstance(master_config, dict)
+        else master_config.policy
+    )
+    generation = policy["generation"]
+    if (
+        generation["temperature"] != 1.0
+        or generation["top_p"] != 1.0
+        or generation["top_k"] not in (None, -1)
+    ):
+        raise ValueError(
+            "vLLM teachers score raw logprobs: policy generation/recomputation requires "
+            "temperature=1, top_p=1, top_k=null or -1"
+        )
+    for cfg in vllm_teachers:
+        assert cfg.vllm_cfg is not None
+        if cfg.vllm_cfg.max_model_len <= policy["max_total_sequence_length"]:
+            raise ValueError(
+                f"Teacher {cfg.alias!r}: max_model_len must exceed the maximum student "
+                "trajectory length by one for vLLM prompt scoring"
+            )
+    return configs
 
 
 def get_opd_full_config(master_config: Any) -> Optional[OnPolicyDistillationFullConfig]:
@@ -656,12 +774,18 @@ def teacher_seq_pad_multiple(
     must be a multiple of every teacher's ``sequence_length_pad_multiple``. All
     teachers must share one packing mode.
     """
-    packing_modes = {twg.use_sequence_packing for twg in teacher_worker_groups.values()}
+    # vLLM strips right padding and has no Megatron packing requirement.
+    teachers = {
+        alias: twg
+        for alias, twg in teacher_worker_groups.items()
+        if twg.sequence_length_pad_multiple != 1 or twg.use_sequence_packing is not None
+    }
+    packing_modes = {twg.use_sequence_packing for twg in teachers.values()}
     if len(packing_modes) > 1:
         raise ValueError("All teachers must use the same sequence-packing mode.")
     if packing_modes != {False}:
         return 1  # no teachers, or all packed (they re-pad internally)
-    for alias, twg in teacher_worker_groups.items():
+    for alias, twg in teachers.items():
         if policy_make_seq_div_by % twg.sequence_length_pad_multiple:
             raise ValueError(
                 f"policy.make_sequence_length_divisible_by ({policy_make_seq_div_by}) "
@@ -718,13 +842,9 @@ def reserve_teacher_clusters(
     """
     # Imported lazily to break the cycle: teacher_worker_group imports the OPD
     # config schemas defined in this module.
-    from nemo_rl.models.policy.teacher_worker_group import (
-        create_teacher_configs_from_opd_config,
-    )
-
     opd_cfg = _opd_cfg(master_config)
     _validate_default_teacher_alias(opd_cfg)
-    teacher_configs = create_teacher_configs_from_opd_config(opd_cfg)
+    teacher_configs = validate_teacher_backend_configs(master_config)
 
     # Running topology of still-free nodes; each teacher consumes a segment and
     # passes the remainder to the next so teachers don't collide.
@@ -774,7 +894,17 @@ def reserve_teacher_clusters(
             # Claim the resources now. Teacher workers are deliberately created
             # later so model loading cannot race with the policy checkpoint
             # conversion.
-            teacher_cluster.get_placement_groups()
+            if teacher_config.backend == "vllm":
+                from nemo_rl.models.generation.vllm import VllmGeneration
+                from nemo_rl.models.policy.vllm_teacher_worker_group import (
+                    build_vllm_teacher_runtime_config,
+                )
+
+                VllmGeneration.init_cluster_placement_groups(
+                    teacher_cluster, build_vllm_teacher_runtime_config(teacher_config)
+                )
+            else:
+                teacher_cluster.get_placement_groups()
             print(
                 f"  ✓ Reserved teacher '{alias}' cluster: "
                 f"{num_nodes} node(s), {gpus_per_node} GPUs/node",
@@ -818,14 +948,13 @@ def create_teacher_worker_groups(
     # config schemas defined in this module.
     from nemo_rl.models.policy.teacher_worker_group import (
         TeacherWorkerGroup,
-        create_teacher_configs_from_opd_config,
     )
 
     opd_cfg = _opd_cfg(master_config)
     teacher_model_by_agent_name = dict(opd_cfg.get("teacher_model_by_agent_name", {}))
     _validate_default_teacher_alias(opd_cfg)
 
-    teacher_configs = create_teacher_configs_from_opd_config(opd_cfg)
+    teacher_configs = validate_teacher_backend_configs(master_config)
     expected_aliases = {teacher_config.alias for teacher_config in teacher_configs}
     if set(teacher_clusters) != expected_aliases:
         raise ValueError(
@@ -845,41 +974,57 @@ def create_teacher_worker_groups(
     alias_to_teacher_index = {cfg.alias: idx for idx, cfg in enumerate(ordered)}
 
     teacher_worker_groups: dict[str, Any] = {}
-    for teacher_config in teacher_configs:
-        alias = teacher_config.alias
-        twg = TeacherWorkerGroup(
-            teacher_cfg=teacher_config,
-            cluster=teacher_clusters[alias],
-            policy_config=policy_config,
-            tokenizer=tokenizer,
-            teacher_index=alias_to_teacher_index[alias],
-        )
-        teacher_worker_groups[alias] = twg
-        print(
-            f"  ✓ Initialized teacher '{alias}' workers",
-            flush=True,
+    try:
+        for teacher_config in teacher_configs:
+            alias = teacher_config.alias
+            if teacher_config.backend == "vllm":
+                from nemo_rl.models.policy.vllm_teacher_worker_group import (
+                    VllmTeacherWorkerGroup,
+                )
+
+                teacher_class = VllmTeacherWorkerGroup
+            else:
+                teacher_class = TeacherWorkerGroup
+            twg = teacher_class(
+                teacher_cfg=teacher_config,
+                cluster=teacher_clusters[alias],
+                policy_config=policy_config,
+                tokenizer=tokenizer,
+                teacher_index=alias_to_teacher_index[alias],
+            )
+            teacher_worker_groups[alias] = twg
+            print(
+                f"  ✓ Initialized teacher '{alias}' workers",
+                flush=True,
+            )
+
+        # Verify all teacher workers are alive (actor __init__ runs async and
+        # failures are otherwise silent until the first remote call).
+        print("  Verifying teacher workers are healthy...", flush=True)
+        for alias, twg in teacher_worker_groups.items():
+            try:
+                refs = [w.__ray_ready__.remote() for w in twg.worker_group.workers]
+                ray.get(refs, timeout=1800)
+            except Exception as e:
+                raise RuntimeError(
+                    f"Teacher '{alias}' worker(s) failed during initialization. "
+                    f"This often means a stale cached mcore checkpoint — try deleting "
+                    f"the cached checkpoint under $HF_HOME/nemo_rl/ and rerunning.\n"
+                    f"Original error: {e}"
+                ) from e
+        print("  ✓ All teacher workers healthy", flush=True)
+
+        # Reject a mixed/incompatible teacher packing config (raises).
+        teacher_seq_pad_multiple(
+            teacher_worker_groups, policy_config["make_sequence_length_divisible_by"]
         )
 
-    # Verify all teacher workers are alive (actor __init__ runs async and
-    # failures are otherwise silent until the first remote call).
-    print("  Verifying teacher workers are healthy...", flush=True)
-    for alias, twg in teacher_worker_groups.items():
-        try:
-            refs = [w.__ray_ready__.remote() for w in twg.worker_group.workers]
-            ray.get(refs, timeout=1800)
-        except Exception as e:
-            raise RuntimeError(
-                f"Teacher '{alias}' worker(s) failed during initialization. "
-                f"This often means a stale cached mcore checkpoint — try deleting "
-                f"the cached checkpoint under $HF_HOME/nemo_rl/ and rerunning.\n"
-                f"Original error: {e}"
-            ) from e
-    print("  ✓ All teacher workers healthy", flush=True)
-
-    # Reject a mixed/incompatible teacher packing config (raises).
-    teacher_seq_pad_multiple(
-        teacher_worker_groups, policy_config["make_sequence_length_divisible_by"]
-    )
+    except BaseException:
+        for teacher in teacher_worker_groups.values():
+            teacher.shutdown()
+        for cluster in teacher_clusters.values():
+            cluster.shutdown()
+        raise
 
     # Build alias -> group_alias mapping for deduplication
     alias_to_group_alias: dict[str, str] = {}

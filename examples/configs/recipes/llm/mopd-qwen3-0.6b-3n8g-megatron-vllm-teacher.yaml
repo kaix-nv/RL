@@ -1,0 +1,30 @@
+# Text-only NeMo-Gym data paths and environment setup are inherited from MOPD.
+defaults: ./mopd-qwen3-1.7b-3n8g-megatron-pack.yaml
+policy:
+  model_name: Qwen/Qwen3-0.6B
+  max_total_sequence_length: 4096
+  generation:
+    temperature: 1.0
+    top_p: 1.0
+    top_k: null
+    max_new_tokens: 512
+    vllm_cfg:
+      max_model_len: 4096
+on_policy_distillation:
+  teacher_model_by_agent_name:
+    default_teacher: Qwen/Qwen3-0.6B
+  non_colocated_teachers:
+    default_teacher_cfg:
+      backend: vllm
+      # These replace the inherited Megatron TP2 teacher settings.
+      tensor_model_parallel_size: 1
+      vllm_cfg:
+        max_model_len: 4097
+        gpu_memory_utilization: 0.85
+        max_num_batched_tokens: 1024
+        max_num_seqs: 1
+logger:
+  wandb:
+    name: mopd-qwen3-0.6b-vllm-teacher
+checkpointing:
+  checkpoint_dir: results/mopd-qwen3-0.6b-vllm-teacher

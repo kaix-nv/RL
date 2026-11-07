@@ -1816,6 +1816,38 @@ class VllmAsyncGenerationWorkerImpl(
             ),
         )
 
+    async def score_tokens(
+        self, data: BatchedDataDict, micro_batch_size: int
+    ) -> BatchedDataDict:
+        """Score exact trajectory tokens without rollout formatting or refit."""
+        from nemo_rl.models.generation.vllm.scoring import score_token_batch
+
+        if not self.is_model_owner or self.llm is None:
+            raise RuntimeError(
+                "Teacher scoring must run on an initialized engine owner"
+            )
+        if asyncio.get_running_loop() is not self._engine_loop:
+            raise RuntimeError(
+                "Teacher scoring must run on the vLLM engine's event loop"
+            )
+        params = self.SamplingParams(
+            prompt_logprobs=0,
+            max_tokens=1,
+            temperature=1.0,
+            top_p=1.0,
+            top_k=-1,
+            detokenize=False,
+            skip_reading_prefix_cache=True,
+        )
+        return await score_token_batch(
+            self.llm,
+            data,
+            sampling_params=params,
+            micro_batch_size=micro_batch_size,
+            max_model_len=self.cfg["vllm_cfg"]["max_model_len"],
+            vocab_size=self.llm.model_config.get_vocab_size(),
+        )
+
     async def generate_async(
         self,
         data: BatchedDataDict[GenerationDatumSpec],

@@ -23,7 +23,6 @@ import ray
 import torch
 from pydantic import BaseModel
 from torchdata.stateful_dataloader import StatefulDataLoader
-from transformers import AutoConfig, AutoTokenizer
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
 from nemo_rl.algorithms.grpo import aggregate_rollout_metrics, refit_policy_generation
@@ -71,6 +70,7 @@ from nemo_rl.models.generation.vllm.config import (
     normalize_vllm_refit_config,
     vllm_sleep_level,
 )
+from nemo_rl.models.huggingface.common import check_vocab_equality
 from nemo_rl.models.policy import PolicyConfig
 from nemo_rl.models.policy.interfaces import ColocatablePolicyInterface
 from nemo_rl.models.policy.lm_policy import Policy
@@ -192,35 +192,6 @@ class MasterConfig(BaseModel, extra="allow"):
 # ===============================================================================
 # Setup & Initialization
 # ===============================================================================
-def check_vocab_equality(
-    tokenizer: TokenizerType, student_model_name: str, teacher_model_name: str
-) -> None:
-    """Check if the vocab of the tokenizer (student) and the teacher tokenizer are equal."""
-    teacher_tokenizer = AutoTokenizer.from_pretrained(teacher_model_name)
-
-    skip_hint = "Set NRL_SKIP_DISTILLATION_TOKENIZER_CHECK=true to skip this check."
-
-    # 1) Exact token->id mapping equality
-    vocab_a = tokenizer.get_vocab()
-    vocab_b = teacher_tokenizer.get_vocab()
-    assert vocab_a == vocab_b, (
-        f"Token->ID mapping differs between student and teacher. {skip_hint}"
-    )
-
-    # 2) Size consistency (sanity checks)
-    assert len(tokenizer) == len(teacher_tokenizer), (
-        f"Effective vocab sizes differ between student and teacher. {skip_hint}"
-    )
-
-    # 3) Chech model.config.vocab_size to guarantee the last dimension of the logits is the same.
-    # Vision-language configs (e.g. Qwen3.5/3.8) keep vocab_size on their text config.
-    student_config = AutoConfig.from_pretrained(student_model_name).get_text_config()
-    teacher_config = AutoConfig.from_pretrained(teacher_model_name).get_text_config()
-    assert student_config.vocab_size == teacher_config.vocab_size, (
-        f"Model config vocab sizes differ between student and teacher. {skip_hint}"
-    )
-
-
 def setup(
     master_config: MasterConfig,
     tokenizer: TokenizerType,
