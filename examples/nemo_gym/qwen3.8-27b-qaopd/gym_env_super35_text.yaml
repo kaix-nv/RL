@@ -48,8 +48,8 @@ env:
       - resources_servers/multichallenge/configs/multichallenge.yaml
       - resources_servers/inverse_if/configs/inverse_if.yaml
       # Added for the text-only Super 3.5 blend (qwen38-super35-text-v1): single-step agents whose resources servers are
-      # self-contained (judges reuse the policy-server aliases below); agents needing sandboxes, simulated users, search APIs or a
-      # terminal harness are not wired and their rows are not selected.
+      # self-contained (judges reuse the policy-server aliases below); agents needing sandboxes, simulated users or search APIs
+      # are not wired and their rows are not selected.
       - resources_servers/equivalence_llm_judge/configs/equivalence_llm_judge.yaml
       - resources_servers/equivalence_llm_judge/configs/lc_judge.yaml
       - resources_servers/equivalence_rule/configs/lc.yaml
@@ -64,6 +64,10 @@ env:
       - resources_servers/terminus_judge/configs/terminus_judge_string_only.yaml
       - resources_servers/single_step_tool_use_with_argument_comparison/configs/search_pivot_single_step_tool_use_with_argument_comparison.yaml
       - resources_servers/single_step_tool_use_with_argument_comparison/configs/droid_pivot_single_step_tool_use_with_argument_comparison.yaml
+      # Added for qwen38-super35-text-v3: the OpenCode terminal harness rows (terminal_multi_harness_opencode_agent). This is a
+      # single-step next-action environment (tool_simulation_agent: one model turn on a recorded session, tool results simulated,
+      # no sandbox), wired in Super 3.5's mopd.yaml. Super routes it to the self-anchor; here it falls back to the one teacher.
+      - resources_servers/terminal_multi_harness/configs/terminal_multi_harness_opencode.yaml
 
     # Qwen3.8 chat template: thinking on by default (reasoning_effort defaults to xhigh) and earlier
     # turns keep their reasoning (preserve_thinking). Reasoning is split out by vLLM's qwen3 parser,
