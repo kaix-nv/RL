@@ -71,6 +71,12 @@ def build_vllm_teacher_runtime_config(teacher_cfg: TeacherConfig) -> VllmConfig:
             "max_num_batched_tokens": limits.max_num_batched_tokens,
             "max_num_seqs": limits.max_num_seqs,
             "enable_chunked_prefill": True,
+            # Passed only when set, so an unset field leaves vLLM's own default.
+            **(
+                {"safetensors_load_strategy": limits.safetensors_load_strategy}
+                if limits.safetensors_load_strategy is not None
+                else {}
+            ),
         },
     )
 

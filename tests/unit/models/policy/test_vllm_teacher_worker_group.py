@@ -63,6 +63,30 @@ def test_clean_runtime_does_not_requantize_or_start_dummy_weights():
     assert runtime["vllm_cfg"]["expose_http_server"] is False
     assert "quantization" not in runtime["vllm_kwargs"]
     assert "speculative_config" not in runtime["vllm_kwargs"]
+    assert "safetensors_load_strategy" not in runtime["vllm_kwargs"]
+
+
+def test_safetensors_load_strategy_passes_through_only_when_set():
+    cfg = config()
+    cfg["non_colocated_teachers"]["default_teacher_cfg"]["vllm_cfg"][
+        "safetensors_load_strategy"
+    ] = "eager"
+    teacher = create_teacher_configs_from_opd_config(cfg)[0]
+    runtime = build_vllm_teacher_runtime_config(teacher)
+    assert runtime["vllm_kwargs"]["safetensors_load_strategy"] == "eager"
+    params = config()["non_colocated_teachers"]["default_teacher_cfg"]
+    with pytest.raises(ValueError):
+        TeacherResourceConfig(
+            **(
+                params
+                | {
+                    "vllm_cfg": {
+                        "max_model_len": 33,
+                        "safetensors_load_strategy": "fast",
+                    }
+                }
+            )
+        )
 
 
 @pytest.mark.parametrize(

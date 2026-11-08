@@ -62,6 +62,12 @@ class VllmTeacherConfig(BaseModel, extra="forbid"):
     gpu_memory_utilization: float = Field(default=0.85, gt=0.0, lt=1.0)
     max_num_batched_tokens: int = Field(default=1024, gt=0)
     max_num_seqs: int = Field(default=1, gt=0)
+    # vLLM's safetensors_load_strategy for the teacher checkpoint. None keeps vLLM's
+    # default (memory-mapped reads; auto-prefetch only when the checkpoint fits in
+    # 90% of host RAM). "eager" reads each shard whole before tensor-parallel slicing,
+    # which avoids scattered small reads on network filesystems such as Lustre. It
+    # changes load time only: the loaded weights are the same bytes.
+    safetensors_load_strategy: Optional[Literal["lazy", "eager", "prefetch"]] = None
 
 
 class TeacherResourceConfig(BaseModel, extra="allow"):
