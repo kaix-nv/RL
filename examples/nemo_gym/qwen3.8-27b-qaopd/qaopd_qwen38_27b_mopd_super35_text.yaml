@@ -1,0 +1,10 @@
+# QAOPD path (b), arm B on the text-only Super 3.5 blend (data/opd/qwen38-super35-text-v1, built by
+# cluster/scripts/build_super35_text_blend.py from the raw phase-1 / phase-2 copies). Same as qaopd_qwen38_27b_mopd.yaml except the
+# Gym wiring (more single-step agents) and data.shuffle=false: the blend is already interleaved per step by domain share (RLHF /
+# reasoning / general), so every step keeps the same mix. Set data.train.data_path to <blend>/train.jsonl.
+defaults:
+  - qaopd_qwen38_27b_mopd.yaml
+  - gym_env_super35_text.yaml
+
+data:
+  shuffle: false
